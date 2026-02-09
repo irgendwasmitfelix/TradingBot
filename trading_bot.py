@@ -418,14 +418,14 @@ class TradingBot:
     def execute_sell_order(self, pair, price):
         """Execute a sell order."""
         try:
-            # Sell what we have, or calculated amount
+            # Immer 100% des Bestands verkaufen, sofern Mindestvolumen erreicht
             holding = self.holdings.get(pair, 0)
-            volume = min(holding, self._calculate_volume(pair, price))
+            volume = holding
             
             if volume < self._get_min_volume(pair):
                 self.logger.warning(f"Insufficient {pair} to sell")
                 return
-                
+            
             self.logger.info(f"Placing SELL order: {volume:.6f} {pair} at ~{price:.2f} EUR")
             
             result = self.api_client.place_order(

@@ -50,7 +50,7 @@ stop_loss_percent = 2.0
 allocation_per_trade_percent = 2.0
 
 # Take-Profit: Automatisch verkaufen bei X% Gewinn (0 = deaktiviert)
-take_profit_percent = 3.0
+take_profit_percent = 5.0
 
 [logging]
 # Log settings to monitor the bot's activities.
