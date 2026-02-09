@@ -171,3 +171,31 @@ class KrakenAPI:
         except Exception as e:
             self.logger.exception(f"Error cancelling order {order_id}: {e}")
             return None
+
+    def get_trade_history(self, start=None):
+        """
+        Fetch trade history from Kraken.
+        
+        Args:
+            start (int, optional): Unix timestamp to start from
+        
+        Returns:
+            dict: Trade history or None if error
+        """
+        try:
+            time.sleep(self.rate_limit_delay)
+            params = {}
+            if start:
+                params['start'] = start
+            
+            response = self.api.query_private('TradesHistory', params)
+            if self._handle_error(response, "Trade History Query"):
+                return None
+            
+            trades = response.get('result', {}).get('trades', {})
+            self.logger.info(f"Trade history fetched: {len(trades)} trades")
+            return trades
+        
+        except Exception as e:
+            self.logger.exception(f"Error fetching trade history: {e}")
+            return None

@@ -23,14 +23,17 @@ class TradingBot:
         self.pair_prices = {}   # Current price per pair
         self.pair_scores = {}   # Signal strength score per pair
         self.holdings = {}      # Track holdings per coin for selling
+        self.purchase_prices = {}  # Track average purchase price per pair
         
         # Initialize signals
         for pair in self.trade_pairs:
             self.pair_signals[pair] = "HOLD"
             self.holdings[pair] = 0.0
+            self.purchase_prices[pair] = 0.0
         
         self.trade_count = 0
         self.target_balance_eur = self._get_target_balance()
+        self.take_profit_percent = self._get_take_profit_percent()
         self.start_time = datetime.now()
         self.last_config_reload = datetime.now()
         self.config_reload_interval = 300  # 5 minutes
@@ -41,6 +44,13 @@ class TradingBot:
             return self.config['bot_settings']['trade_amounts'].get('target_balance_eur', 1000.0)
         except:
             return self.config['bot_settings'].get('target_balance_eur', 1000.0)
+
+    def _get_take_profit_percent(self):
+        """Get take profit percentage from config."""
+        try:
+            return self.config['risk_management'].get('take_profit_percent', 5.0)
+        except:
+            return 5.0
 
     def _get_trade_amount_eur(self):
         """Get trade amount in EUR."""
@@ -74,16 +84,19 @@ class TradingBot:
             if new_config:
                 old_pairs = self.trade_pairs
                 old_target = self.target_balance_eur
+                old_take_profit = self.take_profit_percent
                 
                 self.config = new_config
                 self.trade_pairs = self.config['bot_settings'].get('trade_pairs', ['XBTEUR'])
                 self.target_balance_eur = self._get_target_balance()
+                self.take_profit_percent = self._get_take_profit_percent()
                 
                 # Initialize new pairs
                 for pair in self.trade_pairs:
                     if pair not in self.pair_signals:
                         self.pair_signals[pair] = "HOLD"
                         self.holdings[pair] = 0.0
+                        self.purchase_prices[pair] = 0.0
                 
                 # Log changes
                 if set(old_pairs) != set(self.trade_pairs):
@@ -92,6 +105,9 @@ class TradingBot:
                 if old_target != self.target_balance_eur:
                     self.logger.info(f"CONFIG RELOAD: target_balance changed {old_target} -> {self.target_balance_eur}")
                     print(f"\n[CONFIG] Target balance updated: {old_target} -> {self.target_balance_eur} EUR")
+                if old_take_profit != self.take_profit_percent:
+                    self.logger.info(f"CONFIG RELOAD: take_profit changed {old_take_profit} -> {self.take_profit_percent}")
+                    print(f"\n[CONFIG] Take profit updated: {old_take_profit}% -> {self.take_profit_percent}%")
                 
                 self.last_config_reload = datetime.now()
                 return True
@@ -131,6 +147,91 @@ class TradingBot:
                     self.holdings[pair] = float(balance.get(key, 0))
         except Exception as e:
             self.logger.error(f"Error getting holdings: {e}")
+
+    def load_purchase_prices_from_history(self):
+        """Load purchase prices from Kraken trade history for existing holdings."""
+        try:
+            self.logger.info("Loading purchase prices from trade history...")
+            print("[INFO] Loading purchase prices from Kraken trade history...")
+            
+            trades = self.api_client.get_trade_history()
+            if not trades:
+                self.logger.warning("No trade history found")
+                return
+            
+            # Map Kraken pair names to our pair names
+            kraken_pair_map = {
+                'XXBTZEUR': 'XBTEUR', 'XBTEUR': 'XBTEUR',
+                'XETHZEUR': 'ETHEUR', 'ETHEUR': 'ETHEUR',
+                'SOLEUR': 'SOLEUR',
+                'ADAEUR': 'ADAEUR',
+                'DOTEUR': 'DOTEUR',
+                'XXRPZEUR': 'XRPEUR', 'XRPEUR': 'XRPEUR',
+                'LINKEUR': 'LINKEUR',
+                'MATICEUR': 'MATICEUR'
+            }
+            
+            # Calculate average buy price per pair
+            buy_totals = {}  # {pair: {'cost': total_cost, 'volume': total_volume}}
+            
+            for trade_id, trade in trades.items():
+                kraken_pair = trade.get('pair', '')
+                our_pair = kraken_pair_map.get(kraken_pair)
+                
+                if not our_pair or our_pair not in self.trade_pairs:
+                    continue
+                
+                trade_type = trade.get('type', '')
+                if trade_type != 'buy':
+                    continue
+                
+                price = float(trade.get('price', 0))
+                volume = float(trade.get('vol', 0))
+                cost = float(trade.get('cost', price * volume))
+                
+                if our_pair not in buy_totals:
+                    buy_totals[our_pair] = {'cost': 0, 'volume': 0}
+                
+                buy_totals[our_pair]['cost'] += cost
+                buy_totals[our_pair]['volume'] += volume
+            
+            # Calculate average prices
+            for pair, data in buy_totals.items():
+                if data['volume'] > 0:
+                    avg_price = data['cost'] / data['volume']
+                    self.purchase_prices[pair] = avg_price
+                    self.logger.info(f"Loaded avg buy price for {pair}: {avg_price:.2f} EUR")
+                    print(f"[INFO] {pair} avg buy price: {avg_price:.2f} EUR")
+            
+            self.logger.info("Purchase prices loaded successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Error loading purchase prices: {e}")
+            print(f"[WARNING] Could not load purchase prices from history: {e}")
+
+    def check_take_profit(self):
+        """Check if any holdings should be sold for take-profit."""
+        if self.take_profit_percent <= 0:
+            return None, None  # Take-profit disabled
+        
+        for pair in self.trade_pairs:
+            holding = self.holdings.get(pair, 0)
+            purchase_price = self.purchase_prices.get(pair, 0)
+            current_price = self.pair_prices.get(pair, 0)
+            min_vol = self._get_min_volume(pair)
+            
+            # Skip if no holding or no purchase price
+            if holding < min_vol or purchase_price <= 0 or current_price <= 0:
+                continue
+            
+            # Calculate profit percentage
+            profit_percent = ((current_price - purchase_price) / purchase_price) * 100
+            
+            if profit_percent >= self.take_profit_percent:
+                self.logger.info(f"TAKE PROFIT: {pair} at +{profit_percent:.2f}% (bought at {purchase_price:.2f}, now {current_price:.2f})")
+                return pair, profit_percent
+        
+        return None, None
 
     def analyze_all_pairs(self):
         """Analyze all trading pairs and return the best opportunity."""
@@ -190,8 +291,11 @@ class TradingBot:
         
         initial_balance = self.get_eur_balance()
         self.get_crypto_holdings()
+        self.load_purchase_prices_from_history()  # Load existing purchase prices
         self.logger.info(f"Initial EUR Balance: {initial_balance:.2f} EUR")
+        self.logger.info(f"Take-Profit: {self.take_profit_percent}%")
         print(f"Starting Balance: {initial_balance:.2f} EUR")
+        print(f"Take-Profit Target: {self.take_profit_percent}%")
         print(f"Need to earn: {self.target_balance_eur - initial_balance:.2f} EUR")
         print("-" * 60)
         
@@ -215,6 +319,16 @@ class TradingBot:
                     
                     # Analyze all pairs
                     best_pair, best_signal, best_score = self.analyze_all_pairs()
+                    
+                    # Check for take-profit opportunities FIRST
+                    self.get_crypto_holdings()
+                    tp_pair, tp_profit = self.check_take_profit()
+                    if tp_pair:
+                        price = self.pair_prices.get(tp_pair, 0)
+                        print(f"\n[TAKE PROFIT] {tp_pair} at +{tp_profit:.2f}% profit!")
+                        self.execute_sell_order(tp_pair, price)
+                        # Reset purchase price after selling
+                        self.purchase_prices[tp_pair] = 0.0
                     
                     # Build status display
                     pair_status = " | ".join([f"{p[:3]}:{self.pair_signals.get(p, '?')}" for p in self.trade_pairs[:4]])
@@ -284,7 +398,15 @@ class TradingBot:
             )
             if result:
                 self.trade_count += 1
+                # Track purchase price for take-profit
+                old_holding = self.holdings.get(pair, 0)
+                old_price = self.purchase_prices.get(pair, 0)
+                new_cost = (old_holding * old_price) + (volume * price)
+                new_holding = old_holding + volume
+                if new_holding > 0:
+                    self.purchase_prices[pair] = new_cost / new_holding  # Weighted average
                 self.logger.info(f"BUY ORDER SUCCESS: {result}")
+                self.logger.info(f"Updated avg buy price for {pair}: {self.purchase_prices[pair]:.2f} EUR")
                 print(f"[BUY] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
             else:
                 self.logger.error(f"BUY ORDER FAILED for {pair}")

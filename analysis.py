@@ -158,13 +158,15 @@ class TechnicalAnalysis:
             total_score = rsi_score + sma_score  # Range: -100 to +100
             
             # Generate signal based on indicators
-            # BUY when: RSI is oversold (<30) and short SMA > long SMA
-            # SELL when: RSI is overbought (>70) and short SMA < long SMA
+            # BUY when: RSI is oversold (<35) and short SMA > long SMA (or close)
+            # SELL when: RSI is overbought (>65) and short SMA < long SMA (or close)
             # HOLD otherwise
             
-            if rsi < 30 and sma_short > sma_long:
+            sma_diff_ratio = (sma_short - sma_long) / sma_long
+            
+            if rsi < 35 and sma_diff_ratio > -0.005:  # RSI oversold + SMA not strongly bearish
                 return "BUY", total_score
-            elif rsi > 70 and sma_short < sma_long:
+            elif rsi > 65 and sma_diff_ratio < 0.005:  # RSI overbought + SMA not strongly bullish
                 return "SELL", total_score
             else:
                 return "HOLD", total_score

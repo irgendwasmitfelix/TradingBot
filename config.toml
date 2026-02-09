@@ -39,15 +39,18 @@ MATICEUR = 10.0
 
 [bot_settings.trade_amounts]
 # Trade-Betrag in EUR pro Trade (Bot berechnet automatisch das Volume)
-trade_amount_eur = 30.0
-initial_balance = 2000.0
-target_balance_eur = 2000.0
+trade_amount_eur = 50.0
+initial_balance = 10000.0
+target_balance_eur = 10000.0
 
 [risk_management]
 # Risk settings to prevent significant losses.
 max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 allocation_per_trade_percent = 2.0
+
+# Take-Profit: Automatisch verkaufen bei X% Gewinn (0 = deaktiviert)
+take_profit_percent = 3.0
 
 [logging]
 # Log settings to monitor the bot's activities.
