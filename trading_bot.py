@@ -149,10 +149,10 @@ class TradingBot:
             self.logger.error(f"Error getting holdings: {e}")
 
     def load_purchase_prices_from_history(self):
-        """Load purchase prices from Kraken trade history for existing holdings."""
+        """Load last purchase price from Kraken trade history for existing holdings."""
         try:
-            self.logger.info("Loading purchase prices from trade history...")
-            print("[INFO] Loading purchase prices from Kraken trade history...")
+            self.logger.info("Loading last purchase prices from trade history...")
+            print("[INFO] Loading last purchase prices from Kraken trade history...")
             
             trades = self.api_client.get_trade_history()
             if not trades:
@@ -171,43 +171,31 @@ class TradingBot:
                 'MATICEUR': 'MATICEUR'
             }
             
-            # Calculate average buy price per pair
-            buy_totals = {}  # {pair: {'cost': total_cost, 'volume': total_volume}}
-            
+            # Find last buy price per pair
+            last_buy_price = {}
+            last_buy_time = {}
             for trade_id, trade in trades.items():
                 kraken_pair = trade.get('pair', '')
                 our_pair = kraken_pair_map.get(kraken_pair)
-                
                 if not our_pair or our_pair not in self.trade_pairs:
                     continue
-                
                 trade_type = trade.get('type', '')
                 if trade_type != 'buy':
                     continue
-                
                 price = float(trade.get('price', 0))
-                volume = float(trade.get('vol', 0))
-                cost = float(trade.get('cost', price * volume))
-                
-                if our_pair not in buy_totals:
-                    buy_totals[our_pair] = {'cost': 0, 'volume': 0}
-                
-                buy_totals[our_pair]['cost'] += cost
-                buy_totals[our_pair]['volume'] += volume
-            
-            # Calculate average prices
-            for pair, data in buy_totals.items():
-                if data['volume'] > 0:
-                    avg_price = data['cost'] / data['volume']
-                    self.purchase_prices[pair] = avg_price
-                    self.logger.info(f"Loaded avg buy price for {pair}: {avg_price:.2f} EUR")
-                    print(f"[INFO] {pair} avg buy price: {avg_price:.2f} EUR")
-            
-            self.logger.info("Purchase prices loaded successfully")
-            
+                time_exec = float(trade.get('time', 0))
+                if (our_pair not in last_buy_time) or (time_exec > last_buy_time[our_pair]):
+                    last_buy_time[our_pair] = time_exec
+                    last_buy_price[our_pair] = price
+            for pair in self.trade_pairs:
+                price = last_buy_price.get(pair, 0.0)
+                self.purchase_prices[pair] = price
+                self.logger.info(f"Loaded last buy price for {pair}: {price:.2f} EUR")
+                print(f"[INFO] {pair} last buy price: {price:.2f} EUR")
+            self.logger.info("Last purchase prices loaded successfully")
         except Exception as e:
-            self.logger.error(f"Error loading purchase prices: {e}")
-            print(f"[WARNING] Could not load purchase prices from history: {e}")
+            self.logger.error(f"Error loading last purchase prices: {e}")
+            print(f"[WARNING] Could not load last purchase prices from history: {e}")
 
     def check_take_profit(self):
         """Check if any holdings should be sold for take-profit."""
