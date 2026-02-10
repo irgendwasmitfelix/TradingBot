@@ -53,6 +53,7 @@ min_trade_eur = 10.0
 log_level = "INFO"
 log_to_file = true
 log_file_path = "logs/bot_activity.log"
+fresh_log_on_start = true
 
 [backtesting]
 historical_data_path = "data/historical_prices.csv"

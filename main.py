@@ -64,9 +64,18 @@ if not validate_config(config):
 log_dir = Path(config['logging'].get('log_file_path', 'logs/bot_activity.log')).parent
 log_dir.mkdir(parents=True, exist_ok=True)
 
+log_file = config['logging']['log_file_path'] if config['logging'].get('log_to_file', True) else None
+if log_file and config['logging'].get('fresh_log_on_start', True):
+    try:
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, 'w') as f:
+            f.write('')
+    except Exception as e:
+        print(f"Warning: Could not reset log file {log_file}: {e}")
+
 logging.basicConfig(
     level=config['logging'].get('log_level', 'INFO'),
-    filename=config['logging']['log_file_path'] if config['logging'].get('log_to_file', True) else None,
+    filename=log_file,
     format='%(asctime)s - %(levelname)s - %(message)s',
     force=True
 )
