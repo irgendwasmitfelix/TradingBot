@@ -400,11 +400,8 @@ class TradingBot:
                 self.trade_count += 1
                 # Track purchase price for take-profit
                 old_holding = self.holdings.get(pair, 0)
-                old_price = self.purchase_prices.get(pair, 0)
-                new_cost = (old_holding * old_price) + (volume * price)
-                new_holding = old_holding + volume
-                if new_holding > 0:
-                    self.purchase_prices[pair] = new_cost / new_holding  # Weighted average
+                # Nach jedem Kauf EK aus API holen
+                self.load_purchase_prices_from_history()
                 self.logger.info(f"BUY ORDER SUCCESS: {result}")
                 self.logger.info(f"Updated avg buy price for {pair}: {self.purchase_prices[pair]:.2f} EUR")
                 print(f"[BUY] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
