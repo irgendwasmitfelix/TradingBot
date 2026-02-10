@@ -11,7 +11,7 @@ class TechnicalAnalysis:
     Supports multi-pair analysis with separate price history per pair.
     """
     
-    def __init__(self, rsi_period=14, sma_short=20, sma_long=50):
+    def __init__(self, rsi_period=14, sma_short=20, sma_long=30):
         """
         Initialize the technical analysis tool.
         
