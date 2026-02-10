@@ -30,6 +30,7 @@ class TradingBot:
         self.trade_metrics = {}
         self.last_trade_at = {}
         self.last_global_trade_at = 0
+        self._normalized_pair_logs_seen = set()
 
         self.trade_count = 0
         self.target_balance_eur = self._get_target_balance()
@@ -156,7 +157,10 @@ class TradingBot:
                     valid_requested.append(normalized)
                     seen.add(normalized)
                 if pair != normalized:
-                    self.logger.info(f"Pair normalized: {pair} -> {normalized}")
+                    normalization_key = f"{pair}->{normalized}"
+                    if normalization_key not in self._normalized_pair_logs_seen:
+                        self.logger.info(f"Pair normalized: {pair} -> {normalized}")
+                        self._normalized_pair_logs_seen.add(normalization_key)
             else:
                 self.logger.warning(f"Skipping unknown Kraken pair: {raw_pair}")
 

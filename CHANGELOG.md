@@ -20,6 +20,7 @@ All notable changes to this project are documented here.
 - Config validation in `utils.py` improved to fail safer on invalid/missing settings.
 - Startup log behavior: fresh `logs/bot_activity.log` on bot start when configured.
 - Trade counter now uses all trades since **2026-01-01** (YTD) instead of a single default page.
+- Reduced log noise for pair normalization: identical `Pair normalized: A -> B` messages are now logged once per bot runtime instead of repeating at each config reload.
 
 ### Fixed
 - Repeated `EQuery:Unknown asset pair` issues from invalid pair usage (notably `MATICEUR`) through pair validation.
