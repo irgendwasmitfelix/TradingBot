@@ -7,14 +7,10 @@ key = ""
 secret = ""
 
 [bot_settings]
-# Define bot's operational parameters, including trading pairs and risk settings.
 base_currency = "EUR"
-
-# Multi-Pair Trading: Bot analysiert alle Paare und wählt das beste Signal
-# Wenn auto_select_pair = true, handelt der Bot automatisch den besten Coin
 auto_select_pair = true
 
-# Liste der zu überwachenden Trading-Paare (alle mit EUR)
+# Keep list limited to Kraken-valid EUR pairs in your account setup
 trade_pairs = [
     "XBTEUR",   # Bitcoin
     "ETHEUR",   # Ethereum
@@ -22,11 +18,9 @@ trade_pairs = [
     "ADAEUR",   # Cardano
     "DOTEUR",   # Polkadot
     "XRPEUR",   # Ripple
-    "LINKEUR",  # Chainlink
-    "MATICEUR"  # Polygon
+    "LINKEUR"
 ]
 
-# Mindest-Handelsvolumen pro Coin (Kraken Minimums)
 [bot_settings.min_volumes]
 XBTEUR = 0.0001
 ETHEUR = 0.001
@@ -35,35 +29,32 @@ ADAEUR = 5.0
 DOTEUR = 0.2
 XRPEUR = 5.0
 LINKEUR = 0.2
-MATICEUR = 10.0
 
 [bot_settings.trade_amounts]
-# Trade-Betrag in EUR pro Trade (Bot berechnet automatisch das Volume)
 trade_amount_eur = 50.0
 initial_balance = 10000.0
 target_balance_eur = 10000.0
 
 [risk_management]
-# Risk settings to prevent significant losses.
 max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 allocation_per_trade_percent = 2.0
+take_profit_percent = 10.0
 
-# Take-Profit: Automatisch verkaufen bei X% Gewinn (0 = deaktiviert)
-take_profit_percent = 5.0
+# New execution/risk guards
+max_open_positions = 3
+trade_cooldown_seconds = 180
+min_trade_eur = 10.0
 
 [logging]
-# Log settings to monitor the bot's activities.
 log_level = "INFO"
 log_to_file = true
 log_file_path = "logs/bot_activity.log"
 
 [backtesting]
-# Settings for backtesting against historical data.
 historical_data_path = "data/historical_prices.csv"
 results_output_path = "backtest_results/"
 
 [reporting]
-# Trade summary and analytics reporting.
 generate_trade_reports = true
 report_output_path = "reports/"

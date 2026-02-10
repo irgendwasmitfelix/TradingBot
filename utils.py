@@ -8,20 +8,20 @@ from pathlib import Path
 def load_config(config_path):
     """
     Load configuration from a TOML file.
-    
+
     Args:
         config_path (str): Path to the TOML configuration file.
-    
+
     Returns:
         dict: Configuration dictionary.
     """
     try:
         if not Path(config_path).exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
-        
+
         with open(config_path, 'r') as f:
             config = toml.load(f)
-        
+
         logging.info(f"Configuration loaded successfully from {config_path}")
         return config
     except Exception as e:
@@ -32,28 +32,41 @@ def load_config(config_path):
 def validate_config(config):
     """
     Validate that all required configuration values are present.
-    
+
     Args:
         config (dict): Configuration dictionary.
-    
+
     Returns:
         bool: True if valid, False otherwise.
     """
-    required_keys = {
-        'kraken_api': ['key', 'secret'],
-        'bot_settings': ['trade_pair', 'initial_balance'],
-        'risk_management': ['max_drawdown_percent', 'stop_loss_percent'],
-        'logging': ['log_level']
-    }
-    
-    for section, keys in required_keys.items():
+    required_sections = ['bot_settings', 'risk_management', 'logging']
+    for section in required_sections:
         if section not in config:
             logging.warning(f"Missing config section: {section}")
             return False
-        
-        for key in keys:
-            if key not in config[section]:
-                logging.warning(f"Missing config key: {section}.{key}")
-                return False
-    
+
+    bot_settings = config.get('bot_settings', {})
+    trade_amounts = bot_settings.get('trade_amounts', {})
+
+    # Accept both legacy single-pair config and current multi-pair config
+    has_pairs = bool(bot_settings.get('trade_pairs')) or bool(bot_settings.get('trade_pair'))
+    if not has_pairs:
+        logging.warning("Missing config key: bot_settings.trade_pairs (or legacy trade_pair)")
+        return False
+
+    if 'trade_amount_eur' not in trade_amounts:
+        logging.warning("Missing config key: bot_settings.trade_amounts.trade_amount_eur")
+        return False
+
+    risk = config.get('risk_management', {})
+    for k in ['max_drawdown_percent', 'stop_loss_percent']:
+        if k not in risk:
+            logging.warning(f"Missing config key: risk_management.{k}")
+            return False
+
+    logging_cfg = config.get('logging', {})
+    if 'log_level' not in logging_cfg:
+        logging.warning("Missing config key: logging.log_level")
+        return False
+
     return True
