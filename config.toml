@@ -10,24 +10,24 @@ secret = ""
 base_currency = "EUR"
 auto_select_pair = true
 
-# Keep list limited to Kraken-valid EUR pairs in your account setup
+# Kraken-normalized EUR pairs (altname format preferred)
 trade_pairs = [
-    "XBTEUR",   # Bitcoin
-    "ETHEUR",   # Ethereum
-    "SOLEUR",   # Solana
-    "ADAEUR",   # Cardano
-    "DOTEUR",   # Polkadot
-    "XRPEUR",   # Ripple
-    "LINKEUR"
+    "XXBTZEUR",  # Bitcoin
+    "XETHZEUR",  # Ethereum
+    "SOLEUR",    # Solana
+    "ADAEUR",    # Cardano
+    "DOTEUR",    # Polkadot
+    "XXRPZEUR",  # Ripple
+    "LINKEUR"    # Chainlink
 ]
 
 [bot_settings.min_volumes]
-XBTEUR = 0.0001
-ETHEUR = 0.001
+XXBTZEUR = 0.0001
+XETHZEUR = 0.001
 SOLEUR = 0.02
 ADAEUR = 5.0
 DOTEUR = 0.2
-XRPEUR = 5.0
+XXRPZEUR = 5.0
 LINKEUR = 0.2
 
 [bot_settings.trade_amounts]
@@ -38,12 +38,15 @@ target_balance_eur = 10000.0
 [risk_management]
 max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
-allocation_per_trade_percent = 2.0
+# dynamic sizing uses this % of available EUR, capped by trade_amount_eur
+allocation_per_trade_percent = 35.0
 take_profit_percent = 10.0
+trailing_stop_percent = 1.5
 
-# New execution/risk guards
+# Execution/risk guards
 max_open_positions = 3
 trade_cooldown_seconds = 180
+global_trade_cooldown_seconds = 300
 min_trade_eur = 10.0
 
 [logging]

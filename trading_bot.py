@@ -23,7 +23,9 @@ class TradingBot:
         self.pair_scores = {}
         self.holdings = {}
         self.purchase_prices = {}
+        self.peak_prices = {}
         self.last_trade_at = {}
+        self.last_global_trade_at = 0
 
         self.trade_count = 0
         self.target_balance_eur = self._get_target_balance()
@@ -31,7 +33,8 @@ class TradingBot:
         self.stop_loss_percent = self._get_stop_loss_percent()
         self.max_open_positions = int(self.config.get('risk_management', {}).get('max_open_positions', 3))
         self.trade_cooldown_sec = int(self.config.get('risk_management', {}).get('trade_cooldown_seconds', 180))
-        self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('max_drawdown_percent', 5.0))
+        self.global_trade_cooldown_sec = int(self.config.get('risk_management', {}).get('global_trade_cooldown_seconds', 300))
+        self.trailing_stop_percent = float(self.config.get('risk_management', {}).get('trailing_stop_percent', 1.5))
 
         self.start_time = datetime.now()
         self.last_config_reload = datetime.now()
@@ -47,6 +50,7 @@ class TradingBot:
             self.pair_signals.setdefault(pair, "HOLD")
             self.holdings.setdefault(pair, 0.0)
             self.purchase_prices.setdefault(pair, 0.0)
+            self.peak_prices.setdefault(pair, 0.0)
             self.last_trade_at.setdefault(pair, 0)
 
     def _get_target_balance(self):
@@ -73,6 +77,13 @@ class TradingBot:
         except Exception:
             return 30.0
 
+    def _get_dynamic_trade_amount_eur(self, available_eur):
+        """Dynamic sizing: use smaller of configured amount and % of free EUR."""
+        base_amount = self._get_trade_amount_eur()
+        allocation_pct = float(self.config.get('risk_management', {}).get('allocation_per_trade_percent', 2.0))
+        dynamic_amount = max(0.0, available_eur * (allocation_pct / 100.0))
+        return min(base_amount, dynamic_amount)
+
     def _get_min_volume(self, pair):
         try:
             return float(self.config['bot_settings']['min_volumes'].get(pair, 0.0001))
@@ -96,18 +107,30 @@ class TradingBot:
             return requested_pairs
 
         valid_requested = []
-        asset_keys = set(assets.keys())
-        wsname_to_altname = {v.get('wsname', ''): v.get('altname', '') for v in assets.values()}
+        seen = set()
 
-        for pair in requested_pairs:
-            if pair in asset_keys:
-                valid_requested.append(pair)
-                continue
-            if pair in wsname_to_altname:
-                valid_requested.append(wsname_to_altname[pair])
-                self.logger.info(f"Pair normalized: {pair} -> {wsname_to_altname[pair]}")
-                continue
-            self.logger.warning(f"Skipping unknown Kraken pair: {pair}")
+        # Build flexible normalization index (ALTNAME, WSNAME, and slashless variants)
+        pair_index = {}
+        for key, meta in assets.items():
+            alt = (meta.get('altname') or key or '').upper()
+            ws = (meta.get('wsname') or '').upper()
+            ws_noslash = ws.replace('/', '')
+            key_u = (key or '').upper()
+            for alias in [alt, ws, ws_noslash, key_u, alt.replace('/', '')]:
+                if alias:
+                    pair_index[alias] = alt
+
+        for raw_pair in requested_pairs:
+            pair = (raw_pair or '').upper()
+            normalized = pair_index.get(pair) or pair_index.get(pair.replace('/', ''))
+            if normalized:
+                if normalized not in seen:
+                    valid_requested.append(normalized)
+                    seen.add(normalized)
+                if pair != normalized:
+                    self.logger.info(f"Pair normalized: {pair} -> {normalized}")
+            else:
+                self.logger.warning(f"Skipping unknown Kraken pair: {raw_pair}")
 
         if not valid_requested:
             self.logger.error("No valid trading pairs after Kraken validation")
@@ -132,7 +155,8 @@ class TradingBot:
             self.stop_loss_percent = self._get_stop_loss_percent()
             self.max_open_positions = int(self.config.get('risk_management', {}).get('max_open_positions', self.max_open_positions))
             self.trade_cooldown_sec = int(self.config.get('risk_management', {}).get('trade_cooldown_seconds', self.trade_cooldown_sec))
-            self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('max_drawdown_percent', self.daily_drawdown_percent))
+            self.global_trade_cooldown_sec = int(self.config.get('risk_management', {}).get('global_trade_cooldown_seconds', self.global_trade_cooldown_sec))
+            self.trailing_stop_percent = float(self.config.get('risk_management', {}).get('trailing_stop_percent', self.trailing_stop_percent))
 
             if set(old_pairs) != set(self.trade_pairs):
                 self.logger.info(f"CONFIG RELOAD: trade_pairs changed {old_pairs} -> {self.trade_pairs}")
@@ -161,14 +185,13 @@ class TradingBot:
                 return
 
             pair_to_balance = {
-                'XBTEUR': 'XXBT',
-                'ETHEUR': 'XETH',
+                'XBTEUR': 'XXBT', 'XXBTZEUR': 'XXBT',
+                'ETHEUR': 'XETH', 'XETHZEUR': 'XETH',
                 'SOLEUR': 'SOL',
                 'ADAEUR': 'ADA',
                 'DOTEUR': 'DOT',
-                'XRPEUR': 'XXRP',
+                'XRPEUR': 'XXRP', 'XXRPZEUR': 'XXRP',
                 'LINKEUR': 'LINK',
-                # MATIC deprecated on Kraken in many setups; POL often used now
                 'MATICEUR': 'MATIC',
                 'POLEUR': 'POL'
             }
@@ -249,6 +272,9 @@ class TradingBot:
     def _is_on_cooldown(self, pair):
         return (time.time() - self.last_trade_at.get(pair, 0)) < self.trade_cooldown_sec
 
+    def _is_global_cooldown(self):
+        return (time.time() - self.last_global_trade_at) < self.global_trade_cooldown_sec
+
     def check_take_profit_or_stop_loss(self):
         if self.take_profit_percent <= 0 and self.stop_loss_percent <= 0:
             return None, None, None
@@ -261,11 +287,20 @@ class TradingBot:
             if holding < min_vol or purchase_price <= 0 or current_price <= 0:
                 continue
 
+            # Update trailing peak while position is open
+            prev_peak = self.peak_prices.get(pair, 0.0)
+            self.peak_prices[pair] = max(prev_peak, current_price)
+
             change_percent = ((current_price - purchase_price) / purchase_price) * 100
             if self.take_profit_percent > 0 and change_percent >= self.take_profit_percent:
                 return pair, "TAKE_PROFIT", change_percent
             if self.stop_loss_percent > 0 and change_percent <= -self.stop_loss_percent:
                 return pair, "STOP_LOSS", change_percent
+
+            if self.trailing_stop_percent > 0 and self.peak_prices.get(pair, 0) > 0:
+                drawdown_from_peak = ((self.peak_prices[pair] - current_price) / self.peak_prices[pair]) * 100
+                if drawdown_from_peak >= self.trailing_stop_percent and change_percent > 0:
+                    return pair, "TRAILING_STOP", -drawdown_from_peak
 
         return None, None, None
 
@@ -326,11 +361,6 @@ class TradingBot:
             while True:
                 iteration += 1
 
-                if self._daily_drawdown_hit():
-                    print("\n[SAFETY] Daily drawdown limit hit. Pausing trading loop.")
-                    time.sleep(300)
-                    continue
-
                 current_balance = self.get_eur_balance()
                 if current_balance >= self.target_balance_eur:
                     self.logger.info(f"TARGET REACHED! Balance: {current_balance:.2f} EUR")
@@ -352,7 +382,7 @@ class TradingBot:
                 self.logger.info(status_msg)
                 print(f"\r{status_msg}", end="", flush=True)
 
-                if best_pair and best_signal != "HOLD" and not self._is_on_cooldown(best_pair):
+                if best_pair and best_signal != "HOLD" and not self._is_on_cooldown(best_pair) and not self._is_global_cooldown():
                     price = self.pair_prices.get(best_pair, 0)
                     if best_signal == "BUY":
                         if self._count_open_positions() >= self.max_open_positions:
@@ -381,7 +411,7 @@ class TradingBot:
         try:
             available_eur = self._available_eur_for_buy()
             min_trade_eur = float(self.config.get('risk_management', {}).get('min_trade_eur', 10.0))
-            planned_eur = min(self._get_trade_amount_eur(), available_eur)
+            planned_eur = self._get_dynamic_trade_amount_eur(available_eur)
             if planned_eur < min_trade_eur:
                 self.logger.info(f"BUY skipped for {pair}: insufficient free EUR ({available_eur:.2f})")
                 return
@@ -392,7 +422,10 @@ class TradingBot:
             result = self.api_client.place_order(pair=pair, direction='buy', volume=volume)
             if result:
                 self.trade_count += 1
-                self.last_trade_at[pair] = time.time()
+                now_ts = time.time()
+                self.last_trade_at[pair] = now_ts
+                self.last_global_trade_at = now_ts
+                self.peak_prices[pair] = max(self.peak_prices.get(pair, 0.0), price)
                 self._sync_account_state()
                 self.logger.info(f"BUY ORDER SUCCESS: {result}")
                 print(f"\n[BUY] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
@@ -412,8 +445,11 @@ class TradingBot:
             result = self.api_client.place_order(pair=pair, direction='sell', volume=volume)
             if result:
                 self.trade_count += 1
-                self.last_trade_at[pair] = time.time()
+                now_ts = time.time()
+                self.last_trade_at[pair] = now_ts
+                self.last_global_trade_at = now_ts
                 self.purchase_prices[pair] = 0.0
+                self.peak_prices[pair] = 0.0
                 self._sync_account_state()
                 self.logger.info(f"SELL ORDER SUCCESS: {result}")
                 print(f"\n[SELL] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
