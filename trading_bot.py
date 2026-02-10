@@ -31,6 +31,7 @@ class TradingBot:
         self.last_trade_at = {}
         self.last_global_trade_at = 0
         self._normalized_pair_logs_seen = set()
+        self._last_empty_sell_log_at = {}
 
         self.trade_count = 0
         self.target_balance_eur = self._get_target_balance()
@@ -43,6 +44,7 @@ class TradingBot:
         self.min_buy_score = float(self.config.get('risk_management', {}).get('min_buy_score', 18.0))
         self.adaptive_tp_enabled = bool(self.config.get('risk_management', {}).get('adaptive_take_profit', True))
         self.max_tp_percent = float(self.config.get('risk_management', {}).get('max_take_profit_percent', 14.0))
+        self.empty_sell_log_cooldown_sec = int(self.config.get('risk_management', {}).get('empty_sell_log_cooldown_seconds', 1800))
 
         self.start_time = datetime.now()
         self.last_config_reload = datetime.now()
@@ -189,6 +191,7 @@ class TradingBot:
             self.trade_cooldown_sec = int(self.config.get('risk_management', {}).get('trade_cooldown_seconds', self.trade_cooldown_sec))
             self.global_trade_cooldown_sec = int(self.config.get('risk_management', {}).get('global_trade_cooldown_seconds', self.global_trade_cooldown_sec))
             self.trailing_stop_percent = float(self.config.get('risk_management', {}).get('trailing_stop_percent', self.trailing_stop_percent))
+            self.empty_sell_log_cooldown_sec = int(self.config.get('risk_management', {}).get('empty_sell_log_cooldown_seconds', self.empty_sell_log_cooldown_sec))
 
             if set(old_pairs) != set(self.trade_pairs):
                 self.logger.info(f"CONFIG RELOAD: trade_pairs changed {old_pairs} -> {self.trade_pairs}")
@@ -362,6 +365,13 @@ class TradingBot:
     def _is_global_cooldown(self):
         return (time.time() - self.last_global_trade_at) < self.global_trade_cooldown_sec
 
+    def _log_empty_sell_signal_throttled(self, pair):
+        now_ts = time.time()
+        last_ts = self._last_empty_sell_log_at.get(pair, 0)
+        if (now_ts - last_ts) >= self.empty_sell_log_cooldown_sec:
+            self.logger.info(f"SELL signal for {pair} but no holdings")
+            self._last_empty_sell_log_at[pair] = now_ts
+
     def _profit_percent_from_entry(self, pair, current_price):
         entry = self.purchase_prices.get(pair, 0.0)
         if entry <= 0 or current_price <= 0:
@@ -534,7 +544,7 @@ class TradingBot:
                                     f"SELL skipped for {best_pair}: profit target not reached ({pp if pp is not None else 'n/a'}% < {req:.2f}%)"
                                 )
                         else:
-                            self.logger.info(f"SELL signal for {best_pair} but no holdings")
+                            self._log_empty_sell_signal_throttled(best_pair)
 
                 time_since_reload = (datetime.now() - self.last_config_reload).total_seconds()
                 if time_since_reload >= self.config_reload_interval:

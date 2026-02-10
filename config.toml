@@ -39,9 +39,9 @@ target_balance_eur = 10000.0
 max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 # dynamic sizing uses this % of available EUR, capped by trade_amount_eur
-allocation_per_trade_percent = 35.0
+allocation_per_trade_percent = 20.0
 # Entry quality filter: only buy if score is above threshold
-min_buy_score = 18.0
+min_buy_score = 20.0
 # Sell only once profit reaches this threshold above average entry
 take_profit_percent = 10.0
 # Adaptive TP in strong momentum (extends up to max_take_profit_percent)
@@ -51,9 +51,11 @@ max_take_profit_percent = 14.0
 trailing_stop_percent = 0.0
 
 # Execution/risk guards
-max_open_positions = 3
-trade_cooldown_seconds = 180
-global_trade_cooldown_seconds = 300
+max_open_positions = 2
+trade_cooldown_seconds = 240
+global_trade_cooldown_seconds = 360
+# Suppress repeated empty SELL logs per pair (seconds)
+empty_sell_log_cooldown_seconds = 1800
 min_trade_eur = 10.0
 
 [logging]
