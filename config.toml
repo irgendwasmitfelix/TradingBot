@@ -40,8 +40,13 @@ max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 # dynamic sizing uses this % of available EUR, capped by trade_amount_eur
 allocation_per_trade_percent = 35.0
+# Entry quality filter: only buy if score is above threshold
+min_buy_score = 18.0
 # Sell only once profit reaches this threshold above average entry
 take_profit_percent = 10.0
+# Adaptive TP in strong momentum (extends up to max_take_profit_percent)
+adaptive_take_profit = true
+max_take_profit_percent = 14.0
 # Disabled by user preference (sell only at TP target)
 trailing_stop_percent = 0.0
 

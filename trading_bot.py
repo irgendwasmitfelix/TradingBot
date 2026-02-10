@@ -27,6 +27,7 @@ class TradingBot:
         self.position_qty = {}
         self.realized_pnl = {}
         self.fees_paid = {}
+        self.trade_metrics = {}
         self.last_trade_at = {}
         self.last_global_trade_at = 0
 
@@ -38,6 +39,9 @@ class TradingBot:
         self.trade_cooldown_sec = int(self.config.get('risk_management', {}).get('trade_cooldown_seconds', 180))
         self.global_trade_cooldown_sec = int(self.config.get('risk_management', {}).get('global_trade_cooldown_seconds', 300))
         self.trailing_stop_percent = float(self.config.get('risk_management', {}).get('trailing_stop_percent', 1.5))
+        self.min_buy_score = float(self.config.get('risk_management', {}).get('min_buy_score', 18.0))
+        self.adaptive_tp_enabled = bool(self.config.get('risk_management', {}).get('adaptive_take_profit', True))
+        self.max_tp_percent = float(self.config.get('risk_management', {}).get('max_take_profit_percent', 14.0))
 
         self.start_time = datetime.now()
         self.last_config_reload = datetime.now()
@@ -57,6 +61,7 @@ class TradingBot:
             self.position_qty.setdefault(pair, 0.0)
             self.realized_pnl.setdefault(pair, 0.0)
             self.fees_paid.setdefault(pair, 0.0)
+            self.trade_metrics.setdefault(pair, {"closed": 0, "wins": 0, "losses": 0, "sum_pnl": 0.0})
             self.last_trade_at.setdefault(pair, 0)
 
     def _get_target_balance(self):
@@ -351,12 +356,35 @@ class TradingBot:
             return None
         return ((current_price - entry) / entry) * 100.0
 
+    def _required_take_profit_percent(self, pair):
+        """Adaptive TP: in stronger momentum, demand a bit more profit before selling."""
+        base_tp = self.take_profit_percent
+        if not self.adaptive_tp_enabled:
+            return base_tp
+
+        score = abs(float(self.pair_scores.get(pair, 0.0)))
+        # Map score band [20..50] -> +0..+4%
+        bonus = 0.0
+        if score > 20:
+            bonus = min(4.0, (score - 20.0) / 30.0 * 4.0)
+
+        return min(self.max_tp_percent, base_tp + bonus)
+
     def _can_sell_profit_target(self, pair, current_price):
         """Only allow sell when current price is at/above configured take-profit threshold from entry."""
         profit_pct = self._profit_percent_from_entry(pair, current_price)
         if profit_pct is None:
             return False
-        return profit_pct >= self.take_profit_percent
+        return profit_pct >= self._required_take_profit_percent(pair)
+
+    def _update_trade_metrics(self, pair, pnl_eur):
+        m = self.trade_metrics.setdefault(pair, {"closed": 0, "wins": 0, "losses": 0, "sum_pnl": 0.0})
+        m["closed"] += 1
+        m["sum_pnl"] += pnl_eur
+        if pnl_eur >= 0:
+            m["wins"] += 1
+        else:
+            m["losses"] += 1
 
     def check_take_profit_or_stop_loss(self):
         """User preference: sell only once target profit is reached (default 10% over entry)."""
@@ -375,7 +403,8 @@ class TradingBot:
             self.peak_prices[pair] = max(prev_peak, current_price)
 
             change_percent = self._profit_percent_from_entry(pair, current_price)
-            if change_percent is not None and change_percent >= self.take_profit_percent:
+            req_tp = self._required_take_profit_percent(pair)
+            if change_percent is not None and change_percent >= req_tp:
                 return pair, "TAKE_PROFIT", change_percent
 
         return None, None, None
@@ -458,10 +487,26 @@ class TradingBot:
                 self.logger.info(status_msg)
                 print(f"\r{status_msg}", end="", flush=True)
 
+                if iteration % 10 == 0:
+                    metric_parts = []
+                    for p in self.trade_pairs:
+                        m = self.trade_metrics.get(p, {})
+                        closed = int(m.get("closed", 0))
+                        if closed <= 0:
+                            continue
+                        winrate = (m.get("wins", 0) / closed) * 100.0
+                        avg_pnl = m.get("sum_pnl", 0.0) / closed
+                        metric_parts.append(f"{p}: WR {winrate:.0f}% avg {avg_pnl:.2f}EUR")
+                    if metric_parts:
+                        self.logger.info("METRICS | " + " | ".join(metric_parts))
+
                 if best_pair and best_signal != "HOLD" and not self._is_on_cooldown(best_pair) and not self._is_global_cooldown():
                     price = self.pair_prices.get(best_pair, 0)
                     if best_signal == "BUY":
-                        if self._count_open_positions() >= self.max_open_positions:
+                        score = float(self.pair_scores.get(best_pair, 0.0))
+                        if score < self.min_buy_score:
+                            self.logger.info(f"BUY skipped for {best_pair}: weak score {score:.2f} < min {self.min_buy_score:.2f}")
+                        elif self._count_open_positions() >= self.max_open_positions:
                             self.logger.info("BUY skipped: max open positions reached")
                         else:
                             self.execute_buy_order(best_pair, price)
@@ -472,8 +517,9 @@ class TradingBot:
                                 self.execute_sell_order(best_pair, price)
                             else:
                                 pp = self._profit_percent_from_entry(best_pair, price)
+                                req = self._required_take_profit_percent(best_pair)
                                 self.logger.info(
-                                    f"SELL skipped for {best_pair}: profit target not reached ({pp if pp is not None else 'n/a'}%)"
+                                    f"SELL skipped for {best_pair}: profit target not reached ({pp if pp is not None else 'n/a'}% < {req:.2f}%)"
                                 )
                         else:
                             self.logger.info(f"SELL signal for {best_pair} but no holdings")
@@ -548,6 +594,7 @@ class TradingBot:
                 self.logger.info(
                     f"SELL PNL ESTIMATE {pair}: {est_profit_eur:.2f} EUR ({est_profit_pct if est_profit_pct is not None else 0:.2f}%)"
                 )
+                self._update_trade_metrics(pair, est_profit_eur)
                 print(f"\n[SELL] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
             else:
                 self.logger.error(f"SELL ORDER FAILED for {pair}")
