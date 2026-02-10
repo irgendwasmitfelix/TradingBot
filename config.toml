@@ -40,8 +40,10 @@ max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 # dynamic sizing uses this % of available EUR, capped by trade_amount_eur
 allocation_per_trade_percent = 35.0
+# Sell only once profit reaches this threshold above average entry
 take_profit_percent = 10.0
-trailing_stop_percent = 1.5
+# Disabled by user preference (sell only at TP target)
+trailing_stop_percent = 0.0
 
 # Execution/risk guards
 max_open_positions = 3

@@ -24,6 +24,9 @@ class TradingBot:
         self.holdings = {}
         self.purchase_prices = {}
         self.peak_prices = {}
+        self.position_qty = {}
+        self.realized_pnl = {}
+        self.fees_paid = {}
         self.last_trade_at = {}
         self.last_global_trade_at = 0
 
@@ -51,6 +54,9 @@ class TradingBot:
             self.holdings.setdefault(pair, 0.0)
             self.purchase_prices.setdefault(pair, 0.0)
             self.peak_prices.setdefault(pair, 0.0)
+            self.position_qty.setdefault(pair, 0.0)
+            self.realized_pnl.setdefault(pair, 0.0)
+            self.fees_paid.setdefault(pair, 0.0)
             self.last_trade_at.setdefault(pair, 0)
 
     def _get_target_balance(self):
@@ -86,7 +92,24 @@ class TradingBot:
 
     def _get_min_volume(self, pair):
         try:
-            return float(self.config['bot_settings']['min_volumes'].get(pair, 0.0001))
+            min_volumes = self.config['bot_settings'].get('min_volumes', {})
+            if pair in min_volumes:
+                return float(min_volumes.get(pair, 0.0001))
+
+            # alias fallback (altname <-> wsname style)
+            aliases = {
+                'XBTEUR': 'XXBTZEUR',
+                'ETHEUR': 'XETHZEUR',
+                'XRPEUR': 'XXRPZEUR',
+                'XXBTZEUR': 'XBTEUR',
+                'XETHZEUR': 'ETHEUR',
+                'XXRPZEUR': 'XRPEUR',
+            }
+            alt = aliases.get(pair)
+            if alt and alt in min_volumes:
+                return float(min_volumes.get(alt, 0.0001))
+
+            return 0.0001
         except Exception:
             return 0.0001
 
@@ -208,12 +231,19 @@ class TradingBot:
         self.load_purchase_prices_from_history()
 
     def load_purchase_prices_from_history(self):
+        """Rebuild per-pair average entry price + realized PnL from Kraken trade history.
+
+        Logic:
+        - BUY increases position size and weighted average entry (including fees)
+        - SELL reduces position and realizes PnL (net of fees)
+        """
         try:
             trades = self.api_client.get_trade_history()
             if not trades:
                 return
 
-            kraken_pair_map = {
+            watched = set(self.trade_pairs)
+            pair_aliases = {
                 'XXBTZEUR': 'XBTEUR', 'XBTEUR': 'XBTEUR',
                 'XETHZEUR': 'ETHEUR', 'ETHEUR': 'ETHEUR',
                 'SOLEUR': 'SOLEUR',
@@ -225,23 +255,63 @@ class TradingBot:
                 'POLEUR': 'POLEUR'
             }
 
-            last_buy_price = {}
-            last_buy_time = {}
-            for _, trade in trades.items():
-                kraken_pair = trade.get('pair', '')
-                our_pair = kraken_pair_map.get(kraken_pair, kraken_pair)
-                if our_pair not in self.trade_pairs:
-                    continue
-                if trade.get('type', '') != 'buy':
-                    continue
-                price = float(trade.get('price', 0))
-                time_exec = float(trade.get('time', 0))
-                if our_pair not in last_buy_time or time_exec > last_buy_time[our_pair]:
-                    last_buy_time[our_pair] = time_exec
-                    last_buy_price[our_pair] = price
+            # Reset state before replay
+            for pair in watched:
+                self.position_qty[pair] = 0.0
+                self.purchase_prices[pair] = 0.0
+                self.realized_pnl[pair] = 0.0
+                self.fees_paid[pair] = 0.0
 
-            for pair in self.trade_pairs:
-                self.purchase_prices[pair] = float(last_buy_price.get(pair, self.purchase_prices.get(pair, 0.0)))
+            sorted_trades = sorted(trades.values(), key=lambda t: float(t.get('time', 0)))
+
+            for trade in sorted_trades:
+                raw_pair = trade.get('pair', '')
+                pair = pair_aliases.get(raw_pair, raw_pair)
+                if pair not in watched:
+                    continue
+
+                ttype = trade.get('type', '').lower()
+                vol = float(trade.get('vol', 0) or 0)
+                cost = float(trade.get('cost', 0) or 0)  # quote currency (EUR)
+                fee = float(trade.get('fee', 0) or 0)
+                if vol <= 0:
+                    continue
+
+                self.fees_paid[pair] += fee
+                qty = self.position_qty.get(pair, 0.0)
+                avg = self.purchase_prices.get(pair, 0.0)
+
+                if ttype == 'buy':
+                    total_cost = cost + fee
+                    new_qty = qty + vol
+                    if new_qty > 0:
+                        new_avg = ((avg * qty) + total_cost) / new_qty
+                    else:
+                        new_avg = 0.0
+                    self.position_qty[pair] = new_qty
+                    self.purchase_prices[pair] = new_avg
+                    self.peak_prices[pair] = max(self.peak_prices.get(pair, 0.0), new_avg)
+
+                elif ttype == 'sell':
+                    sell_qty = min(qty, vol)
+                    proceeds_net = cost - fee
+                    if sell_qty > 0 and avg > 0:
+                        cost_basis = avg * sell_qty
+                        self.realized_pnl[pair] += (proceeds_net - cost_basis)
+                    remaining_qty = max(0.0, qty - sell_qty)
+                    self.position_qty[pair] = remaining_qty
+                    if remaining_qty <= self._get_min_volume(pair):
+                        self.purchase_prices[pair] = 0.0
+                        self.peak_prices[pair] = 0.0
+
+            # Reconcile with live holdings from balance (source of truth for quantity)
+            for pair in watched:
+                live_qty = self.holdings.get(pair, 0.0)
+                self.position_qty[pair] = live_qty
+                if live_qty <= self._get_min_volume(pair):
+                    self.purchase_prices[pair] = 0.0
+                    self.peak_prices[pair] = 0.0
+
         except Exception as e:
             self.logger.error(f"Error loading last purchase prices: {e}")
 
@@ -275,32 +345,38 @@ class TradingBot:
     def _is_global_cooldown(self):
         return (time.time() - self.last_global_trade_at) < self.global_trade_cooldown_sec
 
+    def _profit_percent_from_entry(self, pair, current_price):
+        entry = self.purchase_prices.get(pair, 0.0)
+        if entry <= 0 or current_price <= 0:
+            return None
+        return ((current_price - entry) / entry) * 100.0
+
+    def _can_sell_profit_target(self, pair, current_price):
+        """Only allow sell when current price is at/above configured take-profit threshold from entry."""
+        profit_pct = self._profit_percent_from_entry(pair, current_price)
+        if profit_pct is None:
+            return False
+        return profit_pct >= self.take_profit_percent
+
     def check_take_profit_or_stop_loss(self):
-        if self.take_profit_percent <= 0 and self.stop_loss_percent <= 0:
+        """User preference: sell only once target profit is reached (default 10% over entry)."""
+        if self.take_profit_percent <= 0:
             return None, None, None
 
         for pair in self.trade_pairs:
             holding = self.holdings.get(pair, 0)
-            purchase_price = self.purchase_prices.get(pair, 0)
             current_price = self.pair_prices.get(pair, 0)
             min_vol = self._get_min_volume(pair)
-            if holding < min_vol or purchase_price <= 0 or current_price <= 0:
+            if holding < min_vol or current_price <= 0:
                 continue
 
-            # Update trailing peak while position is open
+            # Update trailing peak while position is open (for reporting/optional future usage)
             prev_peak = self.peak_prices.get(pair, 0.0)
             self.peak_prices[pair] = max(prev_peak, current_price)
 
-            change_percent = ((current_price - purchase_price) / purchase_price) * 100
-            if self.take_profit_percent > 0 and change_percent >= self.take_profit_percent:
+            change_percent = self._profit_percent_from_entry(pair, current_price)
+            if change_percent is not None and change_percent >= self.take_profit_percent:
                 return pair, "TAKE_PROFIT", change_percent
-            if self.stop_loss_percent > 0 and change_percent <= -self.stop_loss_percent:
-                return pair, "STOP_LOSS", change_percent
-
-            if self.trailing_stop_percent > 0 and self.peak_prices.get(pair, 0) > 0:
-                drawdown_from_peak = ((self.peak_prices[pair] - current_price) / self.peak_prices[pair]) * 100
-                if drawdown_from_peak >= self.trailing_stop_percent and change_percent > 0:
-                    return pair, "TRAILING_STOP", -drawdown_from_peak
 
         return None, None, None
 
@@ -392,7 +468,13 @@ class TradingBot:
                     elif best_signal == "SELL":
                         min_vol = self._get_min_volume(best_pair)
                         if self.holdings.get(best_pair, 0) >= min_vol:
-                            self.execute_sell_order(best_pair, price)
+                            if self._can_sell_profit_target(best_pair, price):
+                                self.execute_sell_order(best_pair, price)
+                            else:
+                                pp = self._profit_percent_from_entry(best_pair, price)
+                                self.logger.info(
+                                    f"SELL skipped for {best_pair}: profit target not reached ({pp if pp is not None else 'n/a'}%)"
+                                )
                         else:
                             self.logger.info(f"SELL signal for {best_pair} but no holdings")
 
@@ -434,12 +516,23 @@ class TradingBot:
         except Exception as e:
             self.logger.error(f"Error executing buy order: {e}", exc_info=True)
 
-    def execute_sell_order(self, pair, price):
+    def execute_sell_order(self, pair, price, require_profit_target=True):
         try:
             volume = self.holdings.get(pair, 0)
             if volume < self._get_min_volume(pair):
                 self.logger.info(f"SELL skipped for {pair}: no holdings")
                 return
+
+            if require_profit_target and not self._can_sell_profit_target(pair, price):
+                pp = self._profit_percent_from_entry(pair, price)
+                self.logger.info(
+                    f"SELL blocked for {pair}: target {self.take_profit_percent:.2f}% not reached ({pp if pp is not None else 'n/a'}%)"
+                )
+                return
+
+            avg_entry = self.purchase_prices.get(pair, 0.0)
+            est_profit_pct = self._profit_percent_from_entry(pair, price)
+            est_profit_eur = (price - avg_entry) * volume if avg_entry > 0 else 0.0
 
             self.logger.info(f"Placing SELL order: {volume:.6f} {pair} at ~{price:.2f} EUR")
             result = self.api_client.place_order(pair=pair, direction='sell', volume=volume)
@@ -452,6 +545,9 @@ class TradingBot:
                 self.peak_prices[pair] = 0.0
                 self._sync_account_state()
                 self.logger.info(f"SELL ORDER SUCCESS: {result}")
+                self.logger.info(
+                    f"SELL PNL ESTIMATE {pair}: {est_profit_eur:.2f} EUR ({est_profit_pct if est_profit_pct is not None else 0:.2f}%)"
+                )
                 print(f"\n[SELL] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
             else:
                 self.logger.error(f"SELL ORDER FAILED for {pair}")
