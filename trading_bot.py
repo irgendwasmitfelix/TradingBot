@@ -3,7 +3,7 @@
 import logging
 import time
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from analysis import TechnicalAnalysis
 from utils import load_config
 
@@ -243,7 +243,8 @@ class TradingBot:
         - SELL reduces position and realizes PnL (net of fees)
         """
         try:
-            trades = self.api_client.get_trade_history()
+            year_start_ts = int(datetime(2026, 1, 1, tzinfo=timezone.utc).timestamp())
+            trades = self.api_client.get_trade_history(start=year_start_ts, fetch_all=True)
             if not trades:
                 return
 

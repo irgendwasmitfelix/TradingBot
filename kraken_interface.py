@@ -107,16 +107,50 @@ class KrakenAPI:
             self.logger.exception(f"Error cancelling order {order_id}: {e}")
             return None
 
-    def get_trade_history(self, start=None):
+    def get_trade_history(self, start=None, fetch_all=False, max_pages=200):
         try:
-            time.sleep(self.rate_limit_delay)
             params = {}
             if start:
-                params['start'] = start
-            response = self.api.query_private('TradesHistory', params)
-            if self._handle_error(response, "Trade History Query"):
-                return None
-            return response.get('result', {}).get('trades', {})
+                params['start'] = int(start)
+
+            # Default behavior: single page (Kraken default limit, usually 50)
+            if not fetch_all:
+                time.sleep(self.rate_limit_delay)
+                response = self.api.query_private('TradesHistory', params)
+                if self._handle_error(response, "Trade History Query"):
+                    return None
+                return response.get('result', {}).get('trades', {})
+
+            # Paginated fetch: collect all pages from start timestamp
+            all_trades = {}
+            ofs = 0
+            page = 0
+            total_count = None
+
+            while page < max_pages:
+                query_params = dict(params)
+                query_params['ofs'] = ofs
+                time.sleep(self.rate_limit_delay)
+                response = self.api.query_private('TradesHistory', query_params)
+                if self._handle_error(response, f"Trade History Query (ofs={ofs})"):
+                    return all_trades if all_trades else None
+
+                result = response.get('result', {})
+                trades = result.get('trades', {}) or {}
+                total_count = result.get('count', total_count)
+
+                if not trades:
+                    break
+
+                all_trades.update(trades)
+                batch_len = len(trades)
+                ofs += batch_len
+                page += 1
+
+                if total_count is not None and ofs >= int(total_count):
+                    break
+
+            return all_trades
         except Exception as e:
             self.logger.exception(f"Error fetching trade history: {e}")
             return None
