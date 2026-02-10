@@ -268,6 +268,7 @@ class TradingBot:
                 self.fees_paid[pair] = 0.0
 
             sorted_trades = sorted(trades.values(), key=lambda t: float(t.get('time', 0)))
+            history_trade_count = 0
 
             for trade in sorted_trades:
                 raw_pair = trade.get('pair', '')
@@ -287,6 +288,7 @@ class TradingBot:
                 avg = self.purchase_prices.get(pair, 0.0)
 
                 if ttype == 'buy':
+                    history_trade_count += 1
                     total_cost = cost + fee
                     new_qty = qty + vol
                     if new_qty > 0:
@@ -298,6 +300,7 @@ class TradingBot:
                     self.peak_prices[pair] = max(self.peak_prices.get(pair, 0.0), new_avg)
 
                 elif ttype == 'sell':
+                    history_trade_count += 1
                     sell_qty = min(qty, vol)
                     proceeds_net = cost - fee
                     if sell_qty > 0 and avg > 0:
@@ -308,6 +311,10 @@ class TradingBot:
                     if remaining_qty <= self._get_min_volume(pair):
                         self.purchase_prices[pair] = 0.0
                         self.peak_prices[pair] = 0.0
+
+            # Keep displayed trade counter consistent across restarts (history + new trades)
+            if history_trade_count > 0:
+                self.trade_count = history_trade_count
 
             # Reconcile with live holdings from balance (source of truth for quantity)
             for pair in watched:
