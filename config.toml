@@ -40,8 +40,8 @@ max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 # dynamic sizing uses this % of available EUR, capped by trade_amount_eur
 allocation_per_trade_percent = 20.0
-# Entry quality filter: only buy if score is above threshold
-min_buy_score = 20.0
+# Entry quality filter: lowered for faster re-entry after risk-off phases
+min_buy_score = 14.0
 # Sell only once profit reaches this threshold above average entry
 take_profit_percent = 10.0
 # Adaptive TP in strong momentum (extends up to max_take_profit_percent)
@@ -53,13 +53,13 @@ trailing_stop_percent = 0.0
 # Mentor v2 hardening (single auto-bot; no manual mode switching)
 enable_regime_filter = true
 regime_benchmark_pair = "XBTEUR"
-regime_min_score = -5.0
+regime_min_score = -12.0
 enable_hard_stop_loss = true
 hard_stop_loss_percent = 4.0
 enable_time_stop = true
 time_stop_hours = 72
 daily_loss_limit_percent = 3.0
-risk_off_allocation_multiplier = 0.35
+risk_off_allocation_multiplier = 0.60
 
 # Execution/risk guards
 max_open_positions = 3

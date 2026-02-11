@@ -17,6 +17,7 @@ All notable changes to this project are documented here.
 - Startup balance baseline is now fixed (`Start`) and external cashflows are tracked separately from Kraken ledger (`NetCF` deposits/withdrawals).
 - Mentor-v2 risk hardening: regime filter (auto), hard stop-loss, time-stop, daily loss limit guard, and risk-off position sizing.
 - Multi-edge signal engine updated: mean-reversion + trend-following continuation triggers.
+- Re-entry tuning made more aggressive: `min_buy_score` 20 -> 14, `regime_min_score` -5 -> -12, `risk_off_allocation_multiplier` 0.35 -> 0.60.
 
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).
