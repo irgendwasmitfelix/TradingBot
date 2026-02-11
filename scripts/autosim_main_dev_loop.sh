@@ -49,6 +49,6 @@ PY
   # best-effort sync to NAS (ignore stale-handle issues)
   cp -f "$OUT_DIR"/*.json "$NAS_OUT_DIR"/ 2>/dev/null || true
 
-  log "cycle done; sleeping 3600s"
-  sleep 3600
+  log "cycle done; sleeping 900s"
+  sleep 900
 done
