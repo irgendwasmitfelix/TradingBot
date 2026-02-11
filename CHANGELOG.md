@@ -26,6 +26,9 @@ All notable changes to this project are documented here.
 - Added prod-vs-dev promotion gate checker: `scripts/release_gate_prod_dev.py`.
 - Added NAS data collector for 5y OHLC research on `Volume`: `scripts/collect_kraken_history.py`.
 - Added research progress overview tool: `scripts/research_progress.py`.
+- Added incremental/resumable NAS collector with trading-first throttling and local lock: `scripts/collect_kraken_history_incremental.py`.
+- Added txid-free trade summary log lines for stream-safe display (pair + size + EUR notional only).
+- Branch model simplified to `main` (live) and `dev` (research); deprecated `prod` branch.
 
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).

@@ -42,19 +42,21 @@ python main.py
 - Setup guide: [SETUP_GUIDE.md](SETUP_GUIDE.md)
 - Full change history: [CHANGELOG.md](CHANGELOG.md)
 
-## Release / Research Cycle (prod vs dev)
+## Release / Research Cycle (main vs dev)
 
-- `prod` = live branch/runtime
+- `main` = live branch/runtime (24/7 bot)
 - `dev` = research branch (new ideas, stricter gates, simulations)
 - Yearly benchmark script: `scripts/prod_dev_yearly_backtest.py`
 - Release gate script: `scripts/release_gate_prod_dev.py`
-- Data collection script: `scripts/collect_kraken_history.py`
+- Data collection scripts:
+  - `scripts/collect_kraken_history.py` (initial 5y collection)
+  - `scripts/collect_kraken_history_incremental.py` (incremental/resumable collector)
 - Progress script: `scripts/research_progress.py`
 
-Suggested promotion rule (`dev -> prod`):
-- dev return > prod return
-- dev max drawdown <= prod max drawdown
-- dev final capital > prod final capital
+Suggested promotion rule (`dev -> main`):
+- dev return > main return
+- dev max drawdown <= main max drawdown
+- dev final capital > main final capital
 
 ## Storage planning (Fritz NAS `Volume`)
 
