@@ -35,6 +35,8 @@ class TradingBot:
         self._last_empty_sell_log_at = {}
 
         self.trade_count = 0
+        self.consecutive_losses = 0
+        self.trading_paused_until_ts = 0
         self.target_balance_eur = self._get_target_balance()
         self.take_profit_percent = self._get_take_profit_percent()
         self.stop_loss_percent = self._get_stop_loss_percent()
@@ -55,6 +57,10 @@ class TradingBot:
         self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', 72))
         self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', 3.0))
         self.risk_off_allocation_multiplier = float(self.config.get('risk_management', {}).get('risk_off_allocation_multiplier', 0.35))
+        self.enable_volatility_targeting = bool(self.config.get('risk_management', {}).get('enable_volatility_targeting', True))
+        self.target_volatility_pct = float(self.config.get('risk_management', {}).get('target_volatility_pct', 1.6))
+        self.max_consecutive_losses = int(self.config.get('risk_management', {}).get('max_consecutive_losses', 3))
+        self.pause_after_loss_streak_minutes = int(self.config.get('risk_management', {}).get('pause_after_loss_streak_minutes', 180))
 
         self.start_time = datetime.now()
         self.last_config_reload = datetime.now()
@@ -218,6 +224,10 @@ class TradingBot:
             self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', self.time_stop_hours))
             self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', self.daily_drawdown_percent))
             self.risk_off_allocation_multiplier = float(self.config.get('risk_management', {}).get('risk_off_allocation_multiplier', self.risk_off_allocation_multiplier))
+            self.enable_volatility_targeting = bool(self.config.get('risk_management', {}).get('enable_volatility_targeting', self.enable_volatility_targeting))
+            self.target_volatility_pct = float(self.config.get('risk_management', {}).get('target_volatility_pct', self.target_volatility_pct))
+            self.max_consecutive_losses = int(self.config.get('risk_management', {}).get('max_consecutive_losses', self.max_consecutive_losses))
+            self.pause_after_loss_streak_minutes = int(self.config.get('risk_management', {}).get('pause_after_loss_streak_minutes', self.pause_after_loss_streak_minutes))
 
             if set(old_pairs) != set(self.trade_pairs):
                 self.logger.info(f"CONFIG RELOAD: trade_pairs changed {old_pairs} -> {self.trade_pairs}")
@@ -372,8 +382,45 @@ class TradingBot:
         score = float(self.pair_scores.get(benchmark, 0.0))
         return score >= self.regime_min_score
 
+    def _benchmark_volatility_pct(self):
+        bench = self.regime_benchmark_pair
+        aliases = [bench, bench.replace('/', '')]
+        # analysis stores histories by raw Kraken key seen in ticker payload
+        if bench == 'XBTEUR':
+            aliases += ['XXBTZEUR']
+        if bench == 'ETHEUR':
+            aliases += ['XETHZEUR']
+
+        try:
+            history = None
+            for key in aliases:
+                history = self.analysis_tool.pair_price_history.get(key)
+                if history and len(history) >= 20:
+                    break
+            if not history or len(history) < 20:
+                return 0.0
+            prices = list(history)[-20:]
+            mean = sum(prices) / len(prices)
+            if mean <= 0:
+                return 0.0
+            variance = sum((p - mean) ** 2 for p in prices) / len(prices)
+            return ((variance ** 0.5) / mean) * 100.0
+        except Exception:
+            return 0.0
+
     def _allocation_multiplier(self):
-        return 1.0 if self._is_risk_on_regime() else self.risk_off_allocation_multiplier
+        base = 1.0 if self._is_risk_on_regime() else self.risk_off_allocation_multiplier
+        if not self.enable_volatility_targeting:
+            return base
+        vol = self._benchmark_volatility_pct()
+        if vol <= 0:
+            return base
+        # Higher volatility -> smaller size, lower volatility -> allow base size
+        vol_scale = min(1.25, max(0.35, self.target_volatility_pct / vol))
+        return max(0.2, min(1.25, base * vol_scale))
+
+    def _is_temporarily_paused(self):
+        return time.time() < self.trading_paused_until_ts
 
     def _available_eur_for_buy(self):
         # keep a small reserve for fees/slippage
@@ -486,8 +533,16 @@ class TradingBot:
         m["sum_pnl"] += pnl_eur
         if pnl_eur >= 0:
             m["wins"] += 1
+            self.consecutive_losses = 0
         else:
             m["losses"] += 1
+            self.consecutive_losses += 1
+            if self.consecutive_losses >= self.max_consecutive_losses:
+                pause_sec = self.pause_after_loss_streak_minutes * 60
+                self.trading_paused_until_ts = max(self.trading_paused_until_ts, int(time.time()) + pause_sec)
+                self.logger.warning(
+                    f"Loss-streak pause activated: {self.consecutive_losses} losses -> pause for {self.pause_after_loss_streak_minutes}m"
+                )
 
     def check_take_profit_or_stop_loss(self):
         """Evaluate exits with TP first, then hard stop, then time stop."""
@@ -598,10 +653,11 @@ class TradingBot:
                 self._refresh_cashflows_from_ledger()
                 adjusted_pnl = self._adjusted_pnl_eur(current_balance)
                 regime_state = "RISK_ON" if self._is_risk_on_regime() else "RISK_OFF"
+                pause_state = "PAUSED" if self._is_temporarily_paused() else "ACTIVE"
 
                 pair_status = " | ".join([f"{p[:3]}:{self.pair_signals.get(p, '?')}" for p in self.trade_pairs[:4]])
                 status_msg = (
-                    f"[{iteration}] {pair_status} | {regime_state} | Best: {best_pair or 'NONE'} ({best_signal}) "
+                    f"[{iteration}] {pair_status} | {regime_state}/{pause_state} | Best: {best_pair or 'NONE'} ({best_signal}) "
                     f"| Bal: {current_balance:.2f}EUR | Start: {self.initial_balance_eur:.2f}EUR "
                     f"| NetCF: +{self.net_deposits_eur:.2f}/-{self.net_withdrawals_eur:.2f}EUR "
                     f"| AdjPnL: {adjusted_pnl:+.2f}EUR | Trades: {self.trade_count}"
@@ -626,7 +682,9 @@ class TradingBot:
                     price = self.pair_prices.get(best_pair, 0)
                     if best_signal == "BUY":
                         score = float(self.pair_scores.get(best_pair, 0.0))
-                        if self._daily_drawdown_hit():
+                        if self._is_temporarily_paused():
+                            self.logger.warning("BUY paused: loss-streak cooling period active")
+                        elif self._daily_drawdown_hit():
                             self.logger.warning("BUY paused: daily loss limit reached")
                         elif self.enable_regime_filter and not self._is_risk_on_regime():
                             self.logger.info("BUY skipped: regime filter is RISK_OFF")

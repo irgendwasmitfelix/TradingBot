@@ -60,6 +60,10 @@ enable_time_stop = true
 time_stop_hours = 72
 daily_loss_limit_percent = 3.0
 risk_off_allocation_multiplier = 0.60
+enable_volatility_targeting = true
+target_volatility_pct = 1.6
+max_consecutive_losses = 3
+pause_after_loss_streak_minutes = 180
 
 # Execution/risk guards
 max_open_positions = 3

@@ -18,6 +18,8 @@ All notable changes to this project are documented here.
 - Mentor-v2 risk hardening: regime filter (auto), hard stop-loss, time-stop, daily loss limit guard, and risk-off position sizing.
 - Multi-edge signal engine updated: mean-reversion + trend-following continuation triggers.
 - Re-entry tuning made more aggressive: `min_buy_score` 20 -> 14, `regime_min_score` -5 -> -12, `risk_off_allocation_multiplier` 0.35 -> 0.60.
+- Mentor-v3 adaptive controls added to live bot: volatility-targeted sizing (`target_volatility_pct`) and loss-streak circuit breaker (`max_consecutive_losses` + cooldown pause).
+- Added detailed research simulator `scripts/backtest_v3_detailed.py` for 30d tests with fee/slippage, regime switch behavior, and long/short/scalp estimation.
 
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).
