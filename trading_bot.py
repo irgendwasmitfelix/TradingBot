@@ -50,6 +50,12 @@ class TradingBot:
         self.last_config_reload = datetime.now()
         self.config_reload_interval = 300
         self.daily_start_balance = None
+        self.initial_balance_eur = None
+        self.start_timestamp = int(time.time())
+        self.net_deposits_eur = 0.0
+        self.net_withdrawals_eur = 0.0
+        self._last_cashflow_refresh_ts = 0
+        self.cashflow_refresh_interval_sec = int(self.config.get('reporting', {}).get('cashflow_refresh_seconds', 600))
 
         self.valid_pairs = self._fetch_valid_trade_pairs(self.trade_pairs)
         self.trade_pairs = self.valid_pairs if self.valid_pairs else []
@@ -352,6 +358,47 @@ class TradingBot:
             return True
         return False
 
+    def _refresh_cashflows_from_ledger(self, force=False):
+        now_ts = int(time.time())
+        if not force and (now_ts - self._last_cashflow_refresh_ts) < self.cashflow_refresh_interval_sec:
+            return
+
+        try:
+            ledgers = self.api_client.get_ledgers(asset='ZEUR', start=self.start_timestamp, fetch_all=True)
+            if not ledgers:
+                self._last_cashflow_refresh_ts = now_ts
+                return
+
+            deposits = 0.0
+            withdrawals = 0.0
+            for entry in ledgers.values():
+                ltype = str(entry.get('type', '')).lower()
+                try:
+                    amount = abs(float(entry.get('amount', 0) or 0))
+                except Exception:
+                    amount = 0.0
+
+                if amount <= 0:
+                    continue
+
+                if ltype == 'deposit':
+                    deposits += amount
+                elif ltype == 'withdrawal':
+                    withdrawals += amount
+
+            self.net_deposits_eur = deposits
+            self.net_withdrawals_eur = withdrawals
+            self._last_cashflow_refresh_ts = now_ts
+        except Exception as e:
+            self.logger.error(f"Error refreshing cashflows from ledger: {e}")
+
+    def _adjusted_reference_balance(self):
+        base = self.initial_balance_eur if self.initial_balance_eur is not None else (self.daily_start_balance or 0.0)
+        return base + self.net_deposits_eur - self.net_withdrawals_eur
+
+    def _adjusted_pnl_eur(self, current_balance):
+        return current_balance - self._adjusted_reference_balance()
+
     def _count_open_positions(self):
         count = 0
         for pair in self.trade_pairs:
@@ -477,10 +524,13 @@ class TradingBot:
         print("=" * 60)
 
         initial_balance = self.get_eur_balance()
+        self.initial_balance_eur = initial_balance
         self.daily_start_balance = initial_balance
         self._sync_account_state()
+        self._refresh_cashflows_from_ledger(force=True)
 
         self.logger.info(f"Initial EUR Balance: {initial_balance:.2f} EUR")
+        self.logger.info("Performance baseline is fixed at startup; deposits/withdrawals are tracked separately")
         self.logger.info(f"Take-Profit: {self.take_profit_percent}% | Stop-Loss: {self.stop_loss_percent}%")
 
         try:
@@ -504,8 +554,16 @@ class TradingBot:
                     print(f"\n[{risk_type}] {risk_pair} at {change:.2f}%")
                     self.execute_sell_order(risk_pair, price)
 
+                self._refresh_cashflows_from_ledger()
+                adjusted_pnl = self._adjusted_pnl_eur(current_balance)
+
                 pair_status = " | ".join([f"{p[:3]}:{self.pair_signals.get(p, '?')}" for p in self.trade_pairs[:4]])
-                status_msg = f"[{iteration}] {pair_status} | Best: {best_pair or 'NONE'} ({best_signal}) | Bal: {current_balance:.2f}EUR | Trades: {self.trade_count}"
+                status_msg = (
+                    f"[{iteration}] {pair_status} | Best: {best_pair or 'NONE'} ({best_signal}) "
+                    f"| Bal: {current_balance:.2f}EUR | Start: {self.initial_balance_eur:.2f}EUR "
+                    f"| NetCF: +{self.net_deposits_eur:.2f}/-{self.net_withdrawals_eur:.2f}EUR "
+                    f"| AdjPnL: {adjusted_pnl:+.2f}EUR | Trades: {self.trade_count}"
+                )
                 self.logger.info(status_msg)
                 print(f"\r{status_msg}", end="", flush=True)
 

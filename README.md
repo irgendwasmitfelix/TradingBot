@@ -22,6 +22,7 @@ python main.py
 - Pair validation/normalization against Kraken AssetPairs
 - Single-instance lock to prevent duplicate bot processes
 - Structured logging for stream/monitoring integration
+- Fixed startup-balance baseline with separate Kraken deposit/withdraw tracking for fair performance display (`Start`, `NetCF`, `AdjPnL`)
 
 ## Important files
 

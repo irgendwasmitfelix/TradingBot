@@ -107,6 +107,55 @@ class KrakenAPI:
             self.logger.exception(f"Error cancelling order {order_id}: {e}")
             return None
 
+    def get_ledgers(self, asset=None, start=None, fetch_all=False, max_pages=200):
+        """Fetch ledger entries (deposits/withdrawals/trades/etc)."""
+        try:
+            params = {}
+            if asset:
+                params['asset'] = asset
+            if start:
+                params['start'] = int(start)
+
+            if not fetch_all:
+                time.sleep(self.rate_limit_delay)
+                response = self.api.query_private('Ledgers', params)
+                if self._handle_error(response, "Ledgers Query"):
+                    return None
+                return response.get('result', {}).get('ledger', {})
+
+            all_entries = {}
+            ofs = 0
+            page = 0
+            total_count = None
+
+            while page < max_pages:
+                query_params = dict(params)
+                query_params['ofs'] = ofs
+                time.sleep(self.rate_limit_delay)
+                response = self.api.query_private('Ledgers', query_params)
+                if self._handle_error(response, f"Ledgers Query (ofs={ofs})"):
+                    return all_entries if all_entries else None
+
+                result = response.get('result', {})
+                ledger = result.get('ledger', {}) or {}
+                total_count = result.get('count', total_count)
+
+                if not ledger:
+                    break
+
+                all_entries.update(ledger)
+                batch_len = len(ledger)
+                ofs += batch_len
+                page += 1
+
+                if total_count is not None and ofs >= int(total_count):
+                    break
+
+            return all_entries
+        except Exception as e:
+            self.logger.exception(f"Error fetching ledgers: {e}")
+            return None
+
     def get_trade_history(self, start=None, fetch_all=False, max_pages=200):
         try:
             params = {}

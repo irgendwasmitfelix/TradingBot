@@ -13,6 +13,8 @@ All notable changes to this project are documented here.
 - Per-coin metrics logging and adaptive take-profit controls.
 - Trade counter reconstruction from Kraken history on startup.
 - Trade history pagination support in API wrapper (`fetch_all=True`) with offset paging.
+- Ledger pagination support in API wrapper via `get_ledgers(..., fetch_all=True)`.
+- Startup balance baseline is now fixed (`Start`) and external cashflows are tracked separately from Kraken ledger (`NetCF` deposits/withdrawals).
 
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).
@@ -21,6 +23,7 @@ All notable changes to this project are documented here.
 - Startup log behavior: fresh `logs/bot_activity.log` on bot start when configured.
 - Trade counter now uses all trades since **2026-01-01** (YTD) instead of a single default page.
 - Reduced log noise for pair normalization: identical `Pair normalized: A -> B` messages are now logged once per bot runtime instead of repeating at each config reload.
+- Runtime status output now includes `Start`, `NetCF`, and `AdjPnL` so deposits do not distort baseline performance reading.
 
 ### Fixed
 - Repeated `EQuery:Unknown asset pair` issues from invalid pair usage (notably `MATICEUR`) through pair validation.
