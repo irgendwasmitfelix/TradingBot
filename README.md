@@ -19,6 +19,7 @@ python main.py
 - Sell gate with profit target logic (configured TP, currently 10% base)
 - Fee-aware position reconstruction from Kraken trade history
 - Risk controls: cooldowns, sizing checks, funds checks, max open positions
+- Mentor-v2 protections: auto regime filter, hard stop-loss, time-stop, daily loss guard, risk-off sizing
 - Pair validation/normalization against Kraken AssetPairs
 - Single-instance lock to prevent duplicate bot processes
 - Structured logging for stream/monitoring integration

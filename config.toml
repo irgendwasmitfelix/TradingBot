@@ -50,6 +50,17 @@ max_take_profit_percent = 14.0
 # Disabled by user preference (sell only at TP target)
 trailing_stop_percent = 0.0
 
+# Mentor v2 hardening (single auto-bot; no manual mode switching)
+enable_regime_filter = true
+regime_benchmark_pair = "XBTEUR"
+regime_min_score = -5.0
+enable_hard_stop_loss = true
+hard_stop_loss_percent = 4.0
+enable_time_stop = true
+time_stop_hours = 72
+daily_loss_limit_percent = 3.0
+risk_off_allocation_multiplier = 0.35
+
 # Execution/risk guards
 max_open_positions = 3
 trade_cooldown_seconds = 240

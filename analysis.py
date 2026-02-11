@@ -90,11 +90,19 @@ class TechnicalAnalysis:
             total_score = rsi_score + sma_score
             sma_diff_ratio = (sma_short - sma_long) / sma_long
 
-            # Slightly stricter thresholds to reduce overtrading
+            # Edge 1: Mean-reversion entries/exits
             if rsi < 33 and sma_diff_ratio > -0.003:
                 return "BUY", total_score
-            elif rsi > 67 and sma_diff_ratio < 0.003:
+            if rsi > 67 and sma_diff_ratio < 0.003:
                 return "SELL", total_score
+
+            # Edge 2: Trend-following / breakout continuation
+            # Participate when trend is clean and momentum is not overextended.
+            if sma_diff_ratio > 0.006 and 45 <= rsi <= 68:
+                return "BUY", total_score + 8
+            if sma_diff_ratio < -0.006 and 32 <= rsi <= 55:
+                return "SELL", total_score - 8
+
             return "HOLD", total_score
         except Exception as e:
             self.logger.error(f"Error generating signal: {e}")

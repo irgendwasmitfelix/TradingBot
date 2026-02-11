@@ -15,6 +15,8 @@ All notable changes to this project are documented here.
 - Trade history pagination support in API wrapper (`fetch_all=True`) with offset paging.
 - Ledger pagination support in API wrapper via `get_ledgers(..., fetch_all=True)`.
 - Startup balance baseline is now fixed (`Start`) and external cashflows are tracked separately from Kraken ledger (`NetCF` deposits/withdrawals).
+- Mentor-v2 risk hardening: regime filter (auto), hard stop-loss, time-stop, daily loss limit guard, and risk-off position sizing.
+- Multi-edge signal engine updated: mean-reversion + trend-following continuation triggers.
 
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).

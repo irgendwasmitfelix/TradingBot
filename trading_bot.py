@@ -29,6 +29,7 @@ class TradingBot:
         self.fees_paid = {}
         self.trade_metrics = {}
         self.last_trade_at = {}
+        self.entry_timestamps = {}
         self.last_global_trade_at = 0
         self._normalized_pair_logs_seen = set()
         self._last_empty_sell_log_at = {}
@@ -45,6 +46,15 @@ class TradingBot:
         self.adaptive_tp_enabled = bool(self.config.get('risk_management', {}).get('adaptive_take_profit', True))
         self.max_tp_percent = float(self.config.get('risk_management', {}).get('max_take_profit_percent', 14.0))
         self.empty_sell_log_cooldown_sec = int(self.config.get('risk_management', {}).get('empty_sell_log_cooldown_seconds', 1800))
+        self.enable_regime_filter = bool(self.config.get('risk_management', {}).get('enable_regime_filter', True))
+        self.regime_benchmark_pair = str(self.config.get('risk_management', {}).get('regime_benchmark_pair', 'XBTEUR')).upper()
+        self.regime_min_score = float(self.config.get('risk_management', {}).get('regime_min_score', -5.0))
+        self.enable_hard_stop_loss = bool(self.config.get('risk_management', {}).get('enable_hard_stop_loss', True))
+        self.hard_stop_loss_percent = float(self.config.get('risk_management', {}).get('hard_stop_loss_percent', 4.0))
+        self.enable_time_stop = bool(self.config.get('risk_management', {}).get('enable_time_stop', True))
+        self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', 72))
+        self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', 3.0))
+        self.risk_off_allocation_multiplier = float(self.config.get('risk_management', {}).get('risk_off_allocation_multiplier', 0.35))
 
         self.start_time = datetime.now()
         self.last_config_reload = datetime.now()
@@ -72,6 +82,7 @@ class TradingBot:
             self.fees_paid.setdefault(pair, 0.0)
             self.trade_metrics.setdefault(pair, {"closed": 0, "wins": 0, "losses": 0, "sum_pnl": 0.0})
             self.last_trade_at.setdefault(pair, 0)
+            self.entry_timestamps.setdefault(pair, None)
 
     def _get_target_balance(self):
         try:
@@ -101,7 +112,7 @@ class TradingBot:
         """Dynamic sizing: use smaller of configured amount and % of free EUR."""
         base_amount = self._get_trade_amount_eur()
         allocation_pct = float(self.config.get('risk_management', {}).get('allocation_per_trade_percent', 2.0))
-        dynamic_amount = max(0.0, available_eur * (allocation_pct / 100.0))
+        dynamic_amount = max(0.0, available_eur * (allocation_pct / 100.0)) * self._allocation_multiplier()
         return min(base_amount, dynamic_amount)
 
     def _get_min_volume(self, pair):
@@ -198,6 +209,15 @@ class TradingBot:
             self.global_trade_cooldown_sec = int(self.config.get('risk_management', {}).get('global_trade_cooldown_seconds', self.global_trade_cooldown_sec))
             self.trailing_stop_percent = float(self.config.get('risk_management', {}).get('trailing_stop_percent', self.trailing_stop_percent))
             self.empty_sell_log_cooldown_sec = int(self.config.get('risk_management', {}).get('empty_sell_log_cooldown_seconds', self.empty_sell_log_cooldown_sec))
+            self.enable_regime_filter = bool(self.config.get('risk_management', {}).get('enable_regime_filter', self.enable_regime_filter))
+            self.regime_benchmark_pair = str(self.config.get('risk_management', {}).get('regime_benchmark_pair', self.regime_benchmark_pair)).upper()
+            self.regime_min_score = float(self.config.get('risk_management', {}).get('regime_min_score', self.regime_min_score))
+            self.enable_hard_stop_loss = bool(self.config.get('risk_management', {}).get('enable_hard_stop_loss', self.enable_hard_stop_loss))
+            self.hard_stop_loss_percent = float(self.config.get('risk_management', {}).get('hard_stop_loss_percent', self.hard_stop_loss_percent))
+            self.enable_time_stop = bool(self.config.get('risk_management', {}).get('enable_time_stop', self.enable_time_stop))
+            self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', self.time_stop_hours))
+            self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', self.daily_drawdown_percent))
+            self.risk_off_allocation_multiplier = float(self.config.get('risk_management', {}).get('risk_off_allocation_multiplier', self.risk_off_allocation_multiplier))
 
             if set(old_pairs) != set(self.trade_pairs):
                 self.logger.info(f"CONFIG RELOAD: trade_pairs changed {old_pairs} -> {self.trade_pairs}")
@@ -337,9 +357,23 @@ class TradingBot:
                 if live_qty <= self._get_min_volume(pair):
                     self.purchase_prices[pair] = 0.0
                     self.peak_prices[pair] = 0.0
+                    self.entry_timestamps[pair] = None
+                elif self.entry_timestamps.get(pair) is None:
+                    self.entry_timestamps[pair] = int(time.time())
 
         except Exception as e:
             self.logger.error(f"Error loading last purchase prices: {e}")
+
+    def _is_risk_on_regime(self):
+        if not self.enable_regime_filter:
+            return True
+
+        benchmark = self.regime_benchmark_pair
+        score = float(self.pair_scores.get(benchmark, 0.0))
+        return score >= self.regime_min_score
+
+    def _allocation_multiplier(self):
+        return 1.0 if self._is_risk_on_regime() else self.risk_off_allocation_multiplier
 
     def _available_eur_for_buy(self):
         # keep a small reserve for fees/slippage
@@ -456,10 +490,7 @@ class TradingBot:
             m["losses"] += 1
 
     def check_take_profit_or_stop_loss(self):
-        """User preference: sell only once target profit is reached (default 10% over entry)."""
-        if self.take_profit_percent <= 0:
-            return None, None, None
-
+        """Evaluate exits with TP first, then hard stop, then time stop."""
         for pair in self.trade_pairs:
             holding = self.holdings.get(pair, 0)
             current_price = self.pair_prices.get(pair, 0)
@@ -467,14 +498,24 @@ class TradingBot:
             if holding < min_vol or current_price <= 0:
                 continue
 
-            # Update trailing peak while position is open (for reporting/optional future usage)
             prev_peak = self.peak_prices.get(pair, 0.0)
             self.peak_prices[pair] = max(prev_peak, current_price)
 
             change_percent = self._profit_percent_from_entry(pair, current_price)
+            if change_percent is None:
+                continue
+
             req_tp = self._required_take_profit_percent(pair)
-            if change_percent is not None and change_percent >= req_tp:
+            if self.take_profit_percent > 0 and change_percent >= req_tp:
                 return pair, "TAKE_PROFIT", change_percent
+
+            if self.enable_hard_stop_loss and change_percent <= -abs(self.hard_stop_loss_percent):
+                return pair, "HARD_STOP", change_percent
+
+            if self.enable_time_stop:
+                opened_at = self.entry_timestamps.get(pair)
+                if opened_at and (time.time() - opened_at) >= (self.time_stop_hours * 3600):
+                    return pair, "TIME_STOP", change_percent
 
         return None, None, None
 
@@ -556,10 +597,11 @@ class TradingBot:
 
                 self._refresh_cashflows_from_ledger()
                 adjusted_pnl = self._adjusted_pnl_eur(current_balance)
+                regime_state = "RISK_ON" if self._is_risk_on_regime() else "RISK_OFF"
 
                 pair_status = " | ".join([f"{p[:3]}:{self.pair_signals.get(p, '?')}" for p in self.trade_pairs[:4]])
                 status_msg = (
-                    f"[{iteration}] {pair_status} | Best: {best_pair or 'NONE'} ({best_signal}) "
+                    f"[{iteration}] {pair_status} | {regime_state} | Best: {best_pair or 'NONE'} ({best_signal}) "
                     f"| Bal: {current_balance:.2f}EUR | Start: {self.initial_balance_eur:.2f}EUR "
                     f"| NetCF: +{self.net_deposits_eur:.2f}/-{self.net_withdrawals_eur:.2f}EUR "
                     f"| AdjPnL: {adjusted_pnl:+.2f}EUR | Trades: {self.trade_count}"
@@ -584,7 +626,11 @@ class TradingBot:
                     price = self.pair_prices.get(best_pair, 0)
                     if best_signal == "BUY":
                         score = float(self.pair_scores.get(best_pair, 0.0))
-                        if score < self.min_buy_score:
+                        if self._daily_drawdown_hit():
+                            self.logger.warning("BUY paused: daily loss limit reached")
+                        elif self.enable_regime_filter and not self._is_risk_on_regime():
+                            self.logger.info("BUY skipped: regime filter is RISK_OFF")
+                        elif score < self.min_buy_score:
                             self.logger.info(f"BUY skipped for {best_pair}: weak score {score:.2f} < min {self.min_buy_score:.2f}")
                         elif self._count_open_positions() >= self.max_open_positions:
                             self.logger.info("BUY skipped: max open positions reached")
@@ -634,6 +680,8 @@ class TradingBot:
                 self.last_trade_at[pair] = now_ts
                 self.last_global_trade_at = now_ts
                 self.peak_prices[pair] = max(self.peak_prices.get(pair, 0.0), price)
+                if self.entry_timestamps.get(pair) is None:
+                    self.entry_timestamps[pair] = int(time.time())
                 self._sync_account_state()
                 self.logger.info(f"BUY ORDER SUCCESS: {result}")
                 print(f"\n[BUY] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
@@ -669,6 +717,7 @@ class TradingBot:
                 self.last_global_trade_at = now_ts
                 self.purchase_prices[pair] = 0.0
                 self.peak_prices[pair] = 0.0
+                self.entry_timestamps[pair] = None
                 self._sync_account_state()
                 self.logger.info(f"SELL ORDER SUCCESS: {result}")
                 self.logger.info(
