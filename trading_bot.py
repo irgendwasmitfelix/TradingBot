@@ -842,6 +842,7 @@ class TradingBot:
                     self.entry_timestamps[pair] = int(time.time())
                 self._sync_account_state()
                 self.logger.info(f"BUY ORDER SUCCESS: {result}")
+                self.logger.info(f"BUY SUMMARY: {pair} {volume:.6f} (~{volume*price:.2f} EUR)")
                 print(f"\n[BUY] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
             else:
                 self.logger.error(f"BUY ORDER FAILED for {pair}")
@@ -878,6 +879,7 @@ class TradingBot:
                 self.entry_timestamps[pair] = None
                 self._sync_account_state()
                 self.logger.info(f"SELL ORDER SUCCESS: {result}")
+                self.logger.info(f"SELL SUMMARY: {pair} {volume:.6f} (~{volume*price:.2f} EUR)")
                 self.logger.info(
                     f"SELL PNL ESTIMATE {pair}: {est_profit_eur:.2f} EUR ({est_profit_pct if est_profit_pct is not None else 0:.2f}%)"
                 )
@@ -912,6 +914,7 @@ class TradingBot:
                 self.short_entry_prices[pair] = price
                 self.entry_timestamps[pair] = int(now_ts)
                 self.logger.info(f"SHORT OPEN SUCCESS: {result}")
+                self.logger.info(f"SHORT OPEN SUMMARY: {pair} {volume:.6f} (~{notional:.2f} EUR)")
                 print(f"\n[SHORT OPEN] {volume:.6f} {pair} (~{notional:.2f} EUR) - Trade #{self.trade_count}")
             else:
                 self.logger.error(f"SHORT OPEN FAILED for {pair}")
@@ -937,6 +940,7 @@ class TradingBot:
                 self.short_entry_prices[pair] = 0.0
                 self.entry_timestamps[pair] = None
                 self.logger.info(f"SHORT CLOSE SUCCESS: {result}")
+                self.logger.info(f"SHORT CLOSE SUMMARY: {pair} {qty:.6f} (~{qty*price:.2f} EUR)")
                 self.logger.info(f"SHORT PNL ESTIMATE {pair}: {pnl_eur:.2f} EUR ({pnl_pct:.2f}%)")
                 self._update_trade_metrics(pair, pnl_eur)
                 print(f"\n[SHORT CLOSE] {qty:.6f} {pair} - Trade #{self.trade_count}")
