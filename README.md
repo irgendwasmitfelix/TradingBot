@@ -42,6 +42,29 @@ python main.py
 - Setup guide: [SETUP_GUIDE.md](SETUP_GUIDE.md)
 - Full change history: [CHANGELOG.md](CHANGELOG.md)
 
+## Release / Research Cycle (prod vs dev)
+
+- `prod` = live branch/runtime
+- `dev` = research branch (new ideas, stricter gates, simulations)
+- Yearly benchmark script: `scripts/prod_dev_yearly_backtest.py`
+- Release gate script: `scripts/release_gate_prod_dev.py`
+- Data collection script: `scripts/collect_kraken_history.py`
+- Progress script: `scripts/research_progress.py`
+
+Suggested promotion rule (`dev -> prod`):
+- dev return > prod return
+- dev max drawdown <= prod max drawdown
+- dev final capital > prod final capital
+
+## Storage planning (Fritz NAS `Volume`)
+
+Research path: `/mnt/fritz_nas/Volume/kraken_research_data`
+
+Expected storage footprint (7 pairs):
+- 1m + 15m + 1h OHLC, 5 years (gzip CSV): typically ~0.5–5 GB total
+- 1m only, 5 years: usually ~0.3–3 GB
+- Tick/orderbook multi-year: often 50+ GB up to hundreds of GB
+
 ## Notes
 
 - This bot executes real trades when run without `--test`.

@@ -22,6 +22,10 @@ All notable changes to this project are documented here.
 - Added detailed research simulator `scripts/backtest_v3_detailed.py` for 30d tests with fee/slippage, regime switch behavior, and long/short/scalp estimation.
 - Added live autonomous short execution path (Kraken margin) with capped short notional and configurable leverage.
 - Added autonomous MTF regime scoring (trend + momentum + volatility penalty) to improve risk-on/off switching quality.
+- Added yearly prod-vs-dev benchmark runner: `scripts/prod_dev_yearly_backtest.py`.
+- Added prod-vs-dev promotion gate checker: `scripts/release_gate_prod_dev.py`.
+- Added NAS data collector for 5y OHLC research on `Volume`: `scripts/collect_kraken_history.py`.
+- Added research progress overview tool: `scripts/research_progress.py`.
 
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).
