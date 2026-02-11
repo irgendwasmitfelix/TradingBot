@@ -683,10 +683,10 @@ class TradingBot:
                 pair_status = " | ".join([f"{p[:3]}:{self.pair_signals.get(p, '?')}" for p in self.trade_pairs[:4]])
                 status_msg = (
                     f"[{iteration}] {pair_status} | {regime_state}/{pause_state} | Best: {best_pair or 'NONE'} ({best_signal}) "
-                    f"| AdjPnL: {adjusted_pnl:+.2f}EUR | Trades: {self.trade_count}"
+                    f"| Bal: {current_balance:.2f}EUR | AdjPnL: {adjusted_pnl:+.2f}EUR | Trades: {self.trade_count}"
                 )
                 self.logger.info(status_msg)
-                print(status_msg, flush=True)
+                print(f"\r{status_msg}", end="", flush=True)
 
                 if iteration % 10 == 0:
                     metric_parts = []
