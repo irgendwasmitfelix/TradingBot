@@ -25,6 +25,8 @@ class TradingBot:
         self.purchase_prices = {}
         self.peak_prices = {}
         self.position_qty = {}
+        self.short_qty = {}
+        self.short_entry_prices = {}
         self.realized_pnl = {}
         self.fees_paid = {}
         self.trade_metrics = {}
@@ -61,6 +63,9 @@ class TradingBot:
         self.target_volatility_pct = float(self.config.get('risk_management', {}).get('target_volatility_pct', 1.6))
         self.max_consecutive_losses = int(self.config.get('risk_management', {}).get('max_consecutive_losses', 3))
         self.pause_after_loss_streak_minutes = int(self.config.get('risk_management', {}).get('pause_after_loss_streak_minutes', 180))
+        self.enable_live_shorts = bool(self.config.get('shorting', {}).get('enabled', False))
+        self.short_leverage = str(self.config.get('shorting', {}).get('leverage', '2'))
+        self.max_short_notional_eur = float(self.config.get('shorting', {}).get('max_short_notional_eur', 50.0))
 
         self.start_time = datetime.now()
         self.last_config_reload = datetime.now()
@@ -84,6 +89,8 @@ class TradingBot:
             self.purchase_prices.setdefault(pair, 0.0)
             self.peak_prices.setdefault(pair, 0.0)
             self.position_qty.setdefault(pair, 0.0)
+            self.short_qty.setdefault(pair, 0.0)
+            self.short_entry_prices.setdefault(pair, 0.0)
             self.realized_pnl.setdefault(pair, 0.0)
             self.fees_paid.setdefault(pair, 0.0)
             self.trade_metrics.setdefault(pair, {"closed": 0, "wins": 0, "losses": 0, "sum_pnl": 0.0})
@@ -547,30 +554,45 @@ class TradingBot:
     def check_take_profit_or_stop_loss(self):
         """Evaluate exits with TP first, then hard stop, then time stop."""
         for pair in self.trade_pairs:
-            holding = self.holdings.get(pair, 0)
             current_price = self.pair_prices.get(pair, 0)
+            if current_price <= 0:
+                continue
+
+            # Long position exits
+            holding = self.holdings.get(pair, 0)
             min_vol = self._get_min_volume(pair)
-            if holding < min_vol or current_price <= 0:
-                continue
+            if holding >= min_vol:
+                prev_peak = self.peak_prices.get(pair, 0.0)
+                self.peak_prices[pair] = max(prev_peak, current_price)
 
-            prev_peak = self.peak_prices.get(pair, 0.0)
-            self.peak_prices[pair] = max(prev_peak, current_price)
+                change_percent = self._profit_percent_from_entry(pair, current_price)
+                if change_percent is not None:
+                    req_tp = self._required_take_profit_percent(pair)
+                    if self.take_profit_percent > 0 and change_percent >= req_tp:
+                        return pair, "TAKE_PROFIT", change_percent
 
-            change_percent = self._profit_percent_from_entry(pair, current_price)
-            if change_percent is None:
-                continue
+                    if self.enable_hard_stop_loss and change_percent <= -abs(self.hard_stop_loss_percent):
+                        return pair, "HARD_STOP", change_percent
 
-            req_tp = self._required_take_profit_percent(pair)
-            if self.take_profit_percent > 0 and change_percent >= req_tp:
-                return pair, "TAKE_PROFIT", change_percent
+                    if self.enable_time_stop:
+                        opened_at = self.entry_timestamps.get(pair)
+                        if opened_at and (time.time() - opened_at) >= (self.time_stop_hours * 3600):
+                            return pair, "TIME_STOP", change_percent
 
-            if self.enable_hard_stop_loss and change_percent <= -abs(self.hard_stop_loss_percent):
-                return pair, "HARD_STOP", change_percent
-
-            if self.enable_time_stop:
-                opened_at = self.entry_timestamps.get(pair)
-                if opened_at and (time.time() - opened_at) >= (self.time_stop_hours * 3600):
-                    return pair, "TIME_STOP", change_percent
+            # Short position exits
+            short_qty = self.short_qty.get(pair, 0.0)
+            short_entry = self.short_entry_prices.get(pair, 0.0)
+            if self.enable_live_shorts and short_qty > 0 and short_entry > 0:
+                short_change_percent = ((short_entry - current_price) / short_entry) * 100.0
+                req_tp = self._required_take_profit_percent(pair)
+                if self.take_profit_percent > 0 and short_change_percent >= req_tp:
+                    return pair, "SHORT_TAKE_PROFIT", short_change_percent
+                if self.enable_hard_stop_loss and short_change_percent <= -abs(self.hard_stop_loss_percent):
+                    return pair, "SHORT_HARD_STOP", short_change_percent
+                if self.enable_time_stop:
+                    opened_at = self.entry_timestamps.get(pair)
+                    if opened_at and (time.time() - opened_at) >= (self.time_stop_hours * 3600):
+                        return pair, "SHORT_TIME_STOP", short_change_percent
 
         return None, None, None
 
@@ -648,7 +670,10 @@ class TradingBot:
                 if risk_pair:
                     price = self.pair_prices.get(risk_pair, 0)
                     print(f"\n[{risk_type}] {risk_pair} at {change:.2f}%")
-                    self.execute_sell_order(risk_pair, price)
+                    if str(risk_type).startswith("SHORT_"):
+                        self.execute_close_short_order(risk_pair, price)
+                    else:
+                        self.execute_sell_order(risk_pair, price)
 
                 self._refresh_cashflows_from_ledger()
                 adjusted_pnl = self._adjusted_pnl_eur(current_balance)
@@ -705,6 +730,18 @@ class TradingBot:
                                 self.logger.info(
                                     f"SELL skipped for {best_pair}: profit target not reached ({pp if pp is not None else 'n/a'}% < {req:.2f}%)"
                                 )
+                        elif self.enable_live_shorts and self.short_qty.get(best_pair, 0.0) <= 0:
+                            # Open short mostly in risk-off environments or very strong negative score
+                            score = float(self.pair_scores.get(best_pair, 0.0))
+                            if (not self._is_risk_on_regime()) or score <= -self.min_buy_score:
+                                self.execute_open_short_order(best_pair, price)
+                            else:
+                                self.logger.info("SHORT skipped: regime not risk-off and sell score not strong enough")
+                        elif self.enable_live_shorts and self.short_qty.get(best_pair, 0.0) > 0:
+                            # If already short, consider close on reversal buy impulse
+                            score = float(self.pair_scores.get(best_pair, 0.0))
+                            if score >= self.min_buy_score:
+                                self.execute_close_short_order(best_pair, price)
                         else:
                             self._log_empty_sell_signal_throttled(best_pair)
 
@@ -787,6 +824,63 @@ class TradingBot:
                 self.logger.error(f"SELL ORDER FAILED for {pair}")
         except Exception as e:
             self.logger.error(f"Error executing sell order: {e}", exc_info=True)
+
+    def execute_open_short_order(self, pair, price):
+        try:
+            if not self.enable_live_shorts:
+                return
+            if self.short_qty.get(pair, 0.0) > 0:
+                return
+
+            notional = min(self.max_short_notional_eur, self._get_dynamic_trade_amount_eur(self._available_eur_for_buy()))
+            if notional <= 0 or price <= 0:
+                return
+            volume = max(self._get_min_volume(pair), notional / price)
+            self.logger.info(
+                f"Placing SHORT OPEN order: {volume:.6f} {pair} at ~{price:.2f} EUR (lev={self.short_leverage}x)"
+            )
+            result = self.api_client.place_order(pair=pair, direction='sell', volume=volume, leverage=self.short_leverage)
+            if result:
+                self.trade_count += 1
+                now_ts = time.time()
+                self.last_trade_at[pair] = now_ts
+                self.last_global_trade_at = now_ts
+                self.short_qty[pair] = volume
+                self.short_entry_prices[pair] = price
+                self.entry_timestamps[pair] = int(now_ts)
+                self.logger.info(f"SHORT OPEN SUCCESS: {result}")
+                print(f"\n[SHORT OPEN] {volume:.6f} {pair} (~{notional:.2f} EUR) - Trade #{self.trade_count}")
+            else:
+                self.logger.error(f"SHORT OPEN FAILED for {pair}")
+        except Exception as e:
+            self.logger.error(f"Error opening short order: {e}", exc_info=True)
+
+    def execute_close_short_order(self, pair, price):
+        try:
+            qty = self.short_qty.get(pair, 0.0)
+            entry = self.short_entry_prices.get(pair, 0.0)
+            if qty <= 0 or entry <= 0:
+                return
+            pnl_eur = (entry - price) * qty
+            pnl_pct = ((entry - price) / entry) * 100.0
+            self.logger.info(f"Placing SHORT CLOSE order: {qty:.6f} {pair} at ~{price:.2f} EUR")
+            result = self.api_client.place_order(pair=pair, direction='buy', volume=qty, leverage=self.short_leverage)
+            if result:
+                self.trade_count += 1
+                now_ts = time.time()
+                self.last_trade_at[pair] = now_ts
+                self.last_global_trade_at = now_ts
+                self.short_qty[pair] = 0.0
+                self.short_entry_prices[pair] = 0.0
+                self.entry_timestamps[pair] = None
+                self.logger.info(f"SHORT CLOSE SUCCESS: {result}")
+                self.logger.info(f"SHORT PNL ESTIMATE {pair}: {pnl_eur:.2f} EUR ({pnl_pct:.2f}%)")
+                self._update_trade_metrics(pair, pnl_eur)
+                print(f"\n[SHORT CLOSE] {qty:.6f} {pair} - Trade #{self.trade_count}")
+            else:
+                self.logger.error(f"SHORT CLOSE FAILED for {pair}")
+        except Exception as e:
+            self.logger.error(f"Error closing short order: {e}", exc_info=True)
 
 
 class Backtester:

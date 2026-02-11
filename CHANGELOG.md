@@ -20,6 +20,7 @@ All notable changes to this project are documented here.
 - Re-entry tuning made more aggressive: `min_buy_score` 20 -> 14, `regime_min_score` -5 -> -12, `risk_off_allocation_multiplier` 0.35 -> 0.60.
 - Mentor-v3 adaptive controls added to live bot: volatility-targeted sizing (`target_volatility_pct`) and loss-streak circuit breaker (`max_consecutive_losses` + cooldown pause).
 - Added detailed research simulator `scripts/backtest_v3_detailed.py` for 30d tests with fee/slippage, regime switch behavior, and long/short/scalp estimation.
+- Added live autonomous short execution path (Kraken margin) with capped short notional and configurable leverage.
 
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).

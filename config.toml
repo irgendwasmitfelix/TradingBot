@@ -73,6 +73,11 @@ global_trade_cooldown_seconds = 360
 empty_sell_log_cooldown_seconds = 1800
 min_trade_eur = 10.0
 
+[shorting]
+enabled = true
+leverage = "2"
+max_short_notional_eur = 50.0
+
 [logging]
 log_level = "INFO"
 log_to_file = true

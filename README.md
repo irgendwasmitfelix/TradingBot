@@ -22,6 +22,7 @@ python main.py
 - Mentor-v3 protections: auto regime filter, hard stop-loss, time-stop, daily loss guard, risk-off sizing
 - Intelligent adaptation extras: volatility-targeted sizing and loss-streak circuit breaker with cooldown pause
 - Research backtest tool: `scripts/backtest_v3_detailed.py` (long/short/scalp estimator with fee+slippage assumptions)
+- Live autonomous short support (Kraken margin) with leverage and short notional cap via `[shorting]` config
 - Pair validation/normalization against Kraken AssetPairs
 - Single-instance lock to prevent duplicate bot processes
 - Structured logging for stream/monitoring integration

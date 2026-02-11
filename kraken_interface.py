@@ -52,7 +52,7 @@ class KrakenAPI:
             self.logger.exception(f"Error fetching asset pairs: {e}")
             return {}
 
-    def place_order(self, pair, direction, volume, price=None):
+    def place_order(self, pair, direction, volume, price=None, leverage=None):
         try:
             if direction not in ['buy', 'sell']:
                 self.logger.error(f"Invalid direction: {direction}. Must be 'buy' or 'sell'")
@@ -72,6 +72,8 @@ class KrakenAPI:
             }
             if price:
                 order_params['price'] = str(price)
+            if leverage:
+                order_params['leverage'] = str(leverage)
 
             response = self.api.query_private('AddOrder', order_params)
             if self._handle_error(response, f"Place {direction.upper()} Order"):
