@@ -5,9 +5,11 @@ BASE="/home/felix/.openclaw/workspace/kraken_bot"
 MAIN_WT="/home/felix/.openclaw/workspace/kraken_bot_worktrees/main"
 DEV_WT="/home/felix/.openclaw/workspace/kraken_bot_worktrees/dev"
 PY="$BASE/venv/bin/python"
-OUT_DIR="/mnt/fritz_nas/Volume/kraken_research_data/autosim"
+OUT_DIR="/home/felix/.openclaw/workspace/kraken_bot/reports/autosim"
+NAS_OUT_DIR="/mnt/fritz_nas/Volume/kraken_research_data/autosim"
 LOG="$OUT_DIR/autosim_loop.log"
 mkdir -p "$OUT_DIR"
+mkdir -p "$NAS_OUT_DIR" || true
 
 log(){ echo "[$(date -Iseconds)] $*" | tee -a "$LOG"; }
 
@@ -27,7 +29,7 @@ while true; do
 
   $PY - <<'PY' >>"$LOG" 2>&1
 import json, pathlib, datetime
-out=pathlib.Path('/mnt/fritz_nas/Volume/kraken_research_data/autosim')
+out=pathlib.Path('/home/felix/.openclaw/workspace/kraken_bot/reports/autosim')
 m=json.loads((out/'main_30d.json').read_text())
 d=json.loads((out/'dev_30d.json').read_text())
 summary={
@@ -43,6 +45,9 @@ summary={
 (out/'latest_compare.json').write_text(json.dumps(summary,indent=2))
 print('compare', json.dumps(summary))
 PY
+
+  # best-effort sync to NAS (ignore stale-handle issues)
+  cp -f "$OUT_DIR"/*.json "$NAS_OUT_DIR"/ 2>/dev/null || true
 
   log "cycle done; sleeping 3600s"
   sleep 3600
