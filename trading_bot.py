@@ -55,6 +55,8 @@ class TradingBot:
         self.regime_min_score = float(self.config.get('risk_management', {}).get('regime_min_score', -5.0))
         self.enable_hard_stop_loss = bool(self.config.get('risk_management', {}).get('enable_hard_stop_loss', True))
         self.hard_stop_loss_percent = float(self.config.get('risk_management', {}).get('hard_stop_loss_percent', 4.0))
+        self.enable_mtf_regime_scoring = bool(self.config.get('risk_management', {}).get('enable_mtf_regime_scoring', True))
+        self.mtf_regime_min_score = float(self.config.get('risk_management', {}).get('mtf_regime_min_score', -2.0))
         self.enable_time_stop = bool(self.config.get('risk_management', {}).get('enable_time_stop', True))
         self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', 72))
         self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', 3.0))
@@ -227,6 +229,8 @@ class TradingBot:
             self.regime_min_score = float(self.config.get('risk_management', {}).get('regime_min_score', self.regime_min_score))
             self.enable_hard_stop_loss = bool(self.config.get('risk_management', {}).get('enable_hard_stop_loss', self.enable_hard_stop_loss))
             self.hard_stop_loss_percent = float(self.config.get('risk_management', {}).get('hard_stop_loss_percent', self.hard_stop_loss_percent))
+            self.enable_mtf_regime_scoring = bool(self.config.get('risk_management', {}).get('enable_mtf_regime_scoring', self.enable_mtf_regime_scoring))
+            self.mtf_regime_min_score = float(self.config.get('risk_management', {}).get('mtf_regime_min_score', self.mtf_regime_min_score))
             self.enable_time_stop = bool(self.config.get('risk_management', {}).get('enable_time_stop', self.enable_time_stop))
             self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', self.time_stop_hours))
             self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', self.daily_drawdown_percent))
@@ -381,9 +385,57 @@ class TradingBot:
         except Exception as e:
             self.logger.error(f"Error loading last purchase prices: {e}")
 
+    def _resolve_benchmark_history(self):
+        bench = self.regime_benchmark_pair
+        aliases = [bench, bench.replace('/', '')]
+        if bench == 'XBTEUR':
+            aliases += ['XXBTZEUR']
+        if bench == 'ETHEUR':
+            aliases += ['XETHZEUR']
+        for key in aliases:
+            history = self.analysis_tool.pair_price_history.get(key)
+            if history:
+                return list(history)
+        return []
+
+    def _compute_mtf_regime_score(self):
+        prices = self._resolve_benchmark_history()
+        if len(prices) < 80:
+            return None
+
+        def _safe_rsi(window):
+            val = self.analysis_tool.calculate_rsi(window)
+            return 50.0 if val is None else float(val)
+
+        rsi_fast = _safe_rsi(prices[-25:])
+        rsi_mid = _safe_rsi(prices[-35:])
+        rsi_slow = _safe_rsi(prices[-80:])
+
+        sma10 = sum(prices[-10:]) / 10.0
+        sma30 = sum(prices[-30:]) / 30.0
+        sma70 = sum(prices[-70:]) / 70.0
+
+        trend = (((sma10 - sma30) / sma30) * 100.0) * 0.9 + (((sma30 - sma70) / sma70) * 100.0) * 1.2
+        momentum = ((rsi_fast - 50.0) * 0.4) + ((rsi_mid - 50.0) * 0.35) + ((rsi_slow - 50.0) * 0.25)
+
+        recent = prices[-24:]
+        mean = sum(recent) / len(recent)
+        vol_pct = 0.0
+        if mean > 0:
+            variance = sum((p - mean) ** 2 for p in recent) / len(recent)
+            vol_pct = ((variance ** 0.5) / mean) * 100.0
+        vol_penalty = max(0.0, vol_pct - 2.2) * 1.5
+
+        return trend + momentum - vol_penalty
+
     def _is_risk_on_regime(self):
         if not self.enable_regime_filter:
             return True
+
+        if self.enable_mtf_regime_scoring:
+            mtf_score = self._compute_mtf_regime_score()
+            if mtf_score is not None:
+                return mtf_score >= self.mtf_regime_min_score
 
         benchmark = self.regime_benchmark_pair
         score = float(self.pair_scores.get(benchmark, 0.0))
