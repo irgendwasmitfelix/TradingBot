@@ -19,19 +19,19 @@ run_branch(){
   git fetch origin >>"$LOG" 2>&1 || true
   git checkout -f "$branch" >>"$LOG" 2>&1
   git reset --hard "origin/$branch" >>"$LOG" 2>&1 || true
-  $PY scripts/backtest_v3_detailed.py --days 30 --initial 200 --out "$out" >>"$LOG" 2>&1
+  $PY scripts/backtest_v3_detailed.py --days 365 --initial 200 --out "$out" >>"$LOG" 2>&1
 }
 
 while true; do
   log "cycle start"
-  run_branch "$MAIN_WT" main "$OUT_DIR/main_30d.json"
-  run_branch "$DEV_WT" dev "$OUT_DIR/dev_30d.json"
+  run_branch "$MAIN_WT" main "$OUT_DIR/main_1y.json"
+  run_branch "$DEV_WT" dev "$OUT_DIR/dev_1y.json"
 
   $PY - <<'PY' >>"$LOG" 2>&1
 import json, pathlib, datetime
 out=pathlib.Path('/home/felix/.openclaw/workspace/kraken_bot/reports/autosim')
-m=json.loads((out/'main_30d.json').read_text())
-d=json.loads((out/'dev_30d.json').read_text())
+m=json.loads((out/'main_1y.json').read_text())
+d=json.loads((out/'dev_1y.json').read_text())
 summary={
   'ts': datetime.datetime.utcnow().isoformat()+'Z',
   'main_final': m.get('final_eur'),
