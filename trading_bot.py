@@ -680,7 +680,7 @@ class TradingBot:
                 regime_state = "RISK_ON" if self._is_risk_on_regime() else "RISK_OFF"
                 pause_state = "PAUSED" if self._is_temporarily_paused() else "ACTIVE"
 
-                pair_status = " | ".join([f"{p[:3]}:{self.pair_signals.get(p, '?')}" for p in self.trade_pairs[:4]])
+                pair_status = " ".join([f"{p[:3]}:{self.pair_signals.get(p, '?')}" for p in self.trade_pairs])
                 status_msg = (
                     f"[{iteration}] {pair_status} | {regime_state}/{pause_state} | Best: {best_pair or 'NONE'} ({best_signal}) "
                     f"| Bal: {current_balance:.2f}EUR | Start: {self.initial_balance_eur:.2f}EUR "
