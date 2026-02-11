@@ -11,7 +11,8 @@ INTERVALS = [1, 15, 60]
 BASE_DIR = Path('/mnt/fritz_nas/Volume/kraken_research_data')
 STATE_DIR = BASE_DIR / '_state'
 STATE_FILE = STATE_DIR / 'collector_state.json'
-LOG_FILE = BASE_DIR / 'collector.log'
+LOG_FILE = BASE_DIR / 'collector_runtime.log'
+FALLBACK_LOG_FILE = Path('/tmp/kraken_research_collector.log')
 # Keep runtime lock local to avoid CIFS stale-handle lock failures
 LOCK_FILE = Path('/tmp/kraken_research_collector.lock')
 
@@ -26,8 +27,12 @@ sess = requests.Session()
 def log(msg: str):
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     line = f"[{datetime.now(timezone.utc).isoformat()}] {msg}\n"
-    with open(LOG_FILE, 'a', encoding='utf-8') as f:
-        f.write(line)
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(line)
+    except OSError:
+        with open(FALLBACK_LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(line)
 
 
 def load_state():
