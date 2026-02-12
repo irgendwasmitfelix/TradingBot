@@ -12,15 +12,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 import requests
 
 PAIRS = ["XXBTZEUR", "XETHZEUR", "SOLEUR", "ADAEUR", "DOTEUR", "XXRPZEUR", "LINKEUR"]
+CACHE_DIR = Path("data/ohlc_cache")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+LOCAL_TS_DIR = Path(os.getenv("KRAKEN_TS_DIR", "/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined"))
+USE_LOCAL_TS = os.getenv("USE_LOCAL_TS", "1") == "1"
 
 
 @dataclass
@@ -32,17 +39,104 @@ class Position:
     tag: str = ""
 
 
-def fetch_ohlc(pair: str, since_ts: int, interval: int = 60) -> Dict[int, float]:
-    r = requests.get(
-        "https://api.kraken.com/0/public/OHLC",
-        params={"pair": pair, "interval": interval, "since": since_ts},
-        timeout=20,
-    )
-    j = r.json()
-    if j.get("error"):
-        raise RuntimeError(f"Kraken error for {pair}: {j['error']}")
-    key = [k for k in j["result"].keys() if k != "last"][0]
-    return {int(x[0]): float(x[4]) for x in j["result"][key]}
+def _pair_file_candidates(pair: str) -> List[str]:
+    clean = pair.replace("Z", "")
+    return [f"{pair}.csv", f"{clean}.csv", f"{clean.replace('XXBT', 'XBT')}.csv"]
+
+
+def load_local_timesales_ohlc(pair: str, since_ts: int, end_ts: int, interval: int = 60) -> Dict[int, float]:
+    if not LOCAL_TS_DIR.exists():
+        return {}
+    fpath = None
+    for name in _pair_file_candidates(pair):
+        p = LOCAL_TS_DIR / name
+        if p.exists():
+            fpath = p
+            break
+    if fpath is None:
+        return {}
+
+    bucket = max(1, int(interval)) * 60
+    out: Dict[int, float] = {}
+    seen_window = False
+    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            parts = line.strip().split(",")
+            if len(parts) < 2:
+                continue
+            try:
+                ts = int(float(parts[0]))
+                px = float(parts[1])
+            except Exception:
+                continue
+            if ts < since_ts:
+                continue
+            if ts > end_ts:
+                if seen_window:
+                    break
+                continue
+            seen_window = True
+            bts = (ts // bucket) * bucket
+            out[bts] = px  # last price in bucket
+    return out
+
+
+def fetch_ohlc(pair: str, since_ts: int, end_ts: int, interval: int = 60) -> Dict[int, float]:
+    cache_path = CACHE_DIR / f"{pair}_{since_ts}_{end_ts}_{interval}m.json"
+    if cache_path.exists():
+        return {int(k): float(v) for k, v in json.loads(cache_path.read_text()).items()}
+
+    if USE_LOCAL_TS:
+        local = load_local_timesales_ohlc(pair, since_ts, end_ts, interval)
+        if local:
+            cache_path.write_text(json.dumps(local))
+            return local
+
+    out: Dict[int, float] = {}
+    since = since_ts
+    sess = requests.Session()
+    loops = 0
+
+    while since < end_ts and loops < 500:
+        loops += 1
+        for attempt in range(8):
+            r = sess.get(
+                "https://api.kraken.com/0/public/OHLC",
+                params={"pair": pair, "interval": interval, "since": since},
+                timeout=30,
+            )
+            j = r.json()
+            errs = j.get("error") or []
+            if errs and any("Too many requests" in e for e in errs):
+                time.sleep(1.5 + attempt * 1.0)
+                continue
+            if errs:
+                raise RuntimeError(f"Kraken error for {pair}: {errs}")
+            break
+        else:
+            raise RuntimeError(f"Kraken rate-limit retries exhausted for {pair}")
+
+        res = j.get("result", {})
+        key = [k for k in res.keys() if k != "last"]
+        if not key:
+            break
+        rows = res[key[0]]
+        if not rows:
+            break
+
+        last_ts = since
+        for row in rows:
+            ts = int(row[0])
+            if since_ts <= ts <= end_ts:
+                out[ts] = float(row[4])
+            last_ts = max(last_ts, ts)
+
+        nxt = int(res.get("last", last_ts + 1))
+        since = nxt if nxt > since else (last_ts + 1)
+        time.sleep(0.35)
+
+    cache_path.write_text(json.dumps(out))
+    return out
 
 
 def calc_rsi(prices: List[float], period: int = 14) -> float | None:
@@ -97,8 +191,9 @@ def strategy_signal(prices: List[float]) -> Tuple[str, float]:
 
 
 def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: float) -> dict:
+    end_ts = int(datetime.now(timezone.utc).timestamp())
     since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
-    series = {p: fetch_ohlc(p, since, 60) for p in PAIRS}
+    series = {p: fetch_ohlc(p, since, end_ts, 60) for p in PAIRS}
     all_ts = sorted(set().union(*[set(v.keys()) for v in series.values()]))
 
     hist = {p: deque(maxlen=80) for p in PAIRS}
@@ -112,6 +207,12 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
     consecutive_losses = 0
     pause_until = 0
     closed = []
+    peak_eq = initial_eur
+    min_eq = initial_eur
+    max_dd = 0.0
+    bars_total = 0
+    bars_above_initial = 0
+    bars_below_initial = 0
 
     def equity() -> float:
         eq = cash
@@ -137,6 +238,21 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
 
         benchmark_score = score.get("XXBTZEUR", 0.0)
         risk_on = benchmark_score >= -12.0
+
+        eq_now = equity()
+        bars_total += 1
+        if eq_now >= initial_eur:
+            bars_above_initial += 1
+        else:
+            bars_below_initial += 1
+        peak_eq = max(peak_eq, eq_now)
+        min_eq = min(min_eq, eq_now)
+        if peak_eq > 0:
+            max_dd = max(max_dd, ((peak_eq - eq_now) / peak_eq) * 100.0)
+
+        # Portfolio-level kill-switch: if drawdown is deep, cool off for 24h.
+        if max_dd >= 18.0:
+            pause_until = max(pause_until, ts + 24 * 3600)
 
         # exits first
         for p in PAIRS:
@@ -205,6 +321,13 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
         if allocation < 8.0:
             continue
 
+        # Fee/slippage drag gate: skip weak edges likely to be consumed by costs.
+        # Round-trip drag ~= 2*fee + 2*slip (in % terms)
+        rt_cost_pct = (2 * fee_rate + 2 * (slippage_bps / 10000.0)) * 100.0
+        edge_est_pct = abs(sc) * 0.11  # calibrated proxy: score->expected move
+        if edge_est_pct < (rt_cost_pct * 1.25):
+            continue
+
         # direction switch logic
         is_scalp = abs(sc) >= 28
         direction = None
@@ -262,11 +385,20 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
     for x in closed:
         by_pair[x["pair"]] += x["pnl_eur"]
 
+    above_pct = (bars_above_initial / bars_total * 100.0) if bars_total else 0.0
+    below_pct = (bars_below_initial / bars_total * 100.0) if bars_total else 0.0
+
     result = {
         "period_days": days,
         "initial_eur": round(initial_eur, 2),
         "final_eur": round(cash, 2),
         "return_pct": round((cash - initial_eur) / initial_eur * 100, 2),
+        "max_drawdown_pct": round(max_dd, 2),
+        "peak_equity_eur": round(peak_eq, 2),
+        "min_equity_eur": round(min_eq, 2),
+        "time_above_initial_pct": round(above_pct, 2),
+        "time_below_initial_pct": round(below_pct, 2),
+        "data_points": {k: len(v) for k, v in series.items()},
         "closed_trades": len(closed),
         "wins": wins,
         "losses": losses,
