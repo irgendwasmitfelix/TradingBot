@@ -66,44 +66,39 @@ class TechnicalAnalysis:
             if len(price_history) < self.sma_long:
                 return "HOLD", 0
 
-            prices = list(price_history)
-            rsi = self.calculate_rsi(prices)
-            sma_short = self.calculate_sma(prices, self.sma_short)
-            sma_long = self.calculate_sma(prices, self.sma_long)
-            if rsi is None or sma_short is None or sma_long is None:
-                return "HOLD", 0
+            prices = np.array(list(price_history))
+            
+            # Bollinger Band Breakout Logic
+            # Use same parameters as backtest: SMA20, STD20, SMA50
+            sma20 = np.mean(prices[-20:])
+            std20 = np.std(prices[-20:])
+            sma50 = np.mean(prices[-50:])
+            
+            upper_bb = sma20 + (2.0 * std20)
+            lower_bb = sma20 - (2.0 * std20)
+            
+            current_price = prices[-1]
+            signal = "HOLD"
+            score = 0.0
 
-            # Volatility filter to avoid flat/noisy markets
-            recent = np.array(prices[-self.sma_short:])
-            vol_pct = float(np.std(recent) / np.mean(recent) * 100) if np.mean(recent) > 0 else 0
-            if vol_pct < self.min_volatility_pct:
-                return "HOLD", 0
+            if current_price > upper_bb:
+                # Bullish Breakout
+                if current_price > sma50:
+                    signal = "BUY"
+                    breakout_pct = ((current_price - upper_bb) / upper_bb) * 100
+                    score = 25.0 + (breakout_pct * 50.0)
 
-            rsi_score = 0
-            if rsi < 30:
-                rsi_score = (30 - rsi) / 30 * 50
-            elif rsi > 70:
-                rsi_score = -((rsi - 70) / 30 * 50)
+            elif current_price < lower_bb:
+                # Bearish Breakout
+                if current_price < sma50:
+                    signal = "SELL"
+                    breakout_pct = ((lower_bb - current_price) / lower_bb) * 100
+                    score = -25.0 - (breakout_pct * 50.0)
 
-            sma_diff_percent = ((sma_short - sma_long) / sma_long) * 100
-            sma_score = max(-50, min(50, sma_diff_percent * 10))
-            total_score = rsi_score + sma_score
-            sma_diff_ratio = (sma_short - sma_long) / sma_long
+            # Cap score
+            score = max(-50.0, min(50.0, score))
 
-            # Edge 1: Mean-reversion entries/exits
-            if rsi < 33 and sma_diff_ratio > -0.003:
-                return "BUY", total_score
-            if rsi > 67 and sma_diff_ratio < 0.003:
-                return "SELL", total_score
-
-            # Edge 2: Trend-following / breakout continuation
-            # Participate when trend is clean and momentum is not overextended.
-            if sma_diff_ratio > 0.006 and 45 <= rsi <= 68:
-                return "BUY", total_score + 8
-            if sma_diff_ratio < -0.006 and 32 <= rsi <= 55:
-                return "SELL", total_score - 8
-
-            return "HOLD", total_score
+            return signal, score
         except Exception as e:
             self.logger.error(f"Error generating signal: {e}")
             return "HOLD", 0
