@@ -98,24 +98,34 @@ class TechnicalAnalysis:
             # Cap score
             score = max(-50.0, min(50.0, score))
 
-<<<<<<< HEAD
-            # Edge 1: Mean-reversion entries/exits
-            if rsi < 30 and sma_diff_ratio > -0.003:
-                return "BUY", total_score
-            if rsi > 67 and sma_diff_ratio < 0.003:
-                return "SELL", total_score
+            # Additional indicators: ATR and Williams %R (approximate from closes)
+            atr = None
+            willr = None
+            try:
+                # approximate ATR from close diffs as fallback (we don't have full OHLC here)
+                tr = np.abs(np.diff(prices))
+                atr = float(np.mean(tr[-14:])) if len(tr) >= 14 else None
+            except Exception:
+                atr = None
 
-            # Edge 2: Trend-following / breakout continuation
-            # Participate when trend is clean and momentum is not overextended.
-            if sma_diff_ratio > 0.006 and 45 <= rsi <= 68:
-                return "BUY", total_score + 8
-            if sma_diff_ratio < -0.006 and 32 <= rsi <= 55:
-                return "SELL", total_score - 8
+            try:
+                window = 14
+                if len(prices) >= window:
+                    high_w = np.max(prices[-window:])
+                    low_w = np.min(prices[-window:])
+                    willr = (high_w - current_price) / (high_w - low_w) * -100 if (high_w - low_w) != 0 else None
+            except Exception:
+                willr = None
 
-            return "HOLD", total_score
-=======
+            # Boost score slightly if ATR breakout and %R supports momentum
+            if atr is not None and willr is not None:
+                if current_price > upper_bb and willr < -20:
+                    score += min(8.0, (atr / max(1e-6, sma20)) * 100.0)
+                if current_price < lower_bb and willr > -80:
+                    score -= min(8.0, (atr / max(1e-6, sma20)) * 100.0)
+
             return signal, score
->>>>>>> origin/dev
+
         except Exception as e:
             self.logger.error(f"Error generating signal: {e}")
             return "HOLD", 0
