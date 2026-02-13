@@ -19,8 +19,14 @@ run_branch(){
   git fetch origin >>"$LOG" 2>&1 || true
   git checkout -f "$branch" >>"$LOG" 2>&1
   git reset --hard "origin/$branch" >>"$LOG" 2>&1 || true
-  USE_LOCAL_TS=1 KRAKEN_TS_DIR="/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined" \
+  # Pre-cache NAS OHLCVT to local tmp to avoid CIFS stale handle and rate issues
+  CACHE_DIR="/tmp/sim_ohlc_$(date +%s)"
+  mkdir -p "$CACHE_DIR"
+  rsync -a --exclude='*.lock' /mnt/fritz_nas/Volume/kraken_daten/OHLCVT/ "$CACHE_DIR"/ || cp -r /mnt/fritz_nas/Volume/kraken_daten/OHLCVT/* "$CACHE_DIR"/ || true
+  USE_LOCAL_TS=1 KRAKEN_TS_DIR="$CACHE_DIR" \
     $PY scripts/backtest_v3_detailed.py --days "$days" --initial 200 --out "$out" >>"$LOG" 2>&1
+  # cleanup cache
+  rm -rf "$CACHE_DIR" || true
 }
 
 while true; do
