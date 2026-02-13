@@ -197,6 +197,7 @@ class TradingBot:
                         self._normalized_pair_logs_seen.add(normalization_key)
             else:
                 self.logger.warning(f"Skipping unknown Kraken pair: {raw_pair}")
+        self.kelly_fraction = self._calculate_kelly_fraction()
 
         if not valid_requested:
             self.logger.error("No valid trading pairs after Kraken validation")
@@ -600,8 +601,26 @@ class TradingBot:
                 pause_sec = self.pause_after_loss_streak_minutes * 60
                 self.trading_paused_until_ts = max(self.trading_paused_until_ts, int(time.time()) + pause_sec)
                 self.logger.warning(
+        self.kelly_fraction = self._calculate_kelly_fraction()
                     f"Loss-streak pause activated: {self.consecutive_losses} losses -> pause for {self.pause_after_loss_streak_minutes}m"
                 )
+
+    def _calculate_kelly_fraction(self):
+        # Simple Kelly for the first pair
+        pair = self.trade_pairs[0]
+        m = self.trade_metrics.get(pair, {})
+        closed = m.get("closed", 0)
+        if closed < 10:
+            return 0.1
+        wins = m.get("wins", 0)
+        win_rate = wins / closed if closed > 0 else 0
+        total_pnl = m.get("sum_pnl", 0.0)
+        avg_win = sum([p for p in [total_pnl] if p > 0]) / wins if wins > 0 else 0  # approximate
+        avg_loss = sum([p for p in [total_pnl] if p < 0]) / (closed - wins) if closed - wins > 0 else 0
+        if avg_loss == 0:
+            return 0.1
+        kelly = win_rate - ((1 - win_rate) / (avg_win / abs(avg_loss)))
+        return max(0.01, min(0.5, kelly))
 
     def check_take_profit_or_stop_loss(self):
         """Evaluate exits with TP first, then hard stop, then time stop."""
@@ -772,8 +791,10 @@ class TradingBot:
                         score = float(self.pair_scores.get(best_pair, 0.0))
                         if self._is_temporarily_paused():
                             self.logger.warning("BUY paused: loss-streak cooling period active")
+        self.kelly_fraction = self._calculate_kelly_fraction()
                         elif self._daily_drawdown_hit():
                             self.logger.warning("BUY paused: daily loss limit reached")
+        self.kelly_fraction = self._calculate_kelly_fraction()
                         elif self.enable_regime_filter and not self._is_risk_on_regime():
                             self.logger.info("BUY skipped: regime filter is RISK_OFF")
                         elif score < self.min_buy_score:
@@ -957,6 +978,75 @@ class Backtester:
         self.logger = logging.getLogger(__name__)
 
     def run(self):
-        self.logger.info("Starting backtesting...")
+        import numpy as np
+        from datetime import datetime
+
         print("Backtesting mode activated.")
-        print("Backtesting functionality is not yet implemented.")
+
+        # Parameters
+        pairs = self.config['bot_settings'].get('trade_pairs', ['XBTEUR'])
+        start_date = datetime(2024, 1, 1)
+        interval = 60
+        initial_balance = 1000.0
+
+        # Fetch OHLC data
+        ohlc_data = {}
+        for pair in pairs:
+            data = self.api_client.get_ohlc_data(pair, interval, int(start_date.timestamp()))
+            if data:
+                ohlc_data[pair] = data
+            else:
+                self.logger.warning(f"No OHLC data for {pair}")
+        self.kelly_fraction = self._calculate_kelly_fraction()
+
+        if not ohlc_data:
+            print("No data available for backtesting.")
+            return
+
+        # Simulate trading
+        balance = initial_balance
+        positions = {pair: 0.0 for pair in pairs}
+        entry_prices = {pair: 0.0 for pair in pairs}
+        pnls = []
+        balances = [initial_balance]
+        max_drawdown = 0.0
+        peak_balance = initial_balance
+
+        analysis = TechnicalAnalysis()
+
+        for i in range(len(ohlc_data[pairs[0]])):
+            price = float(ohlc_data[pairs[0]][i][4])  # close
+            market_data = {pairs[0]: {'c': [price]}}
+
+            signal, score = analysis.generate_signal_with_score(market_data)
+
+            if signal == 'BUY' and positions[pairs[0]] == 0:
+                volume = balance / price * 0.1
+                positions[pairs[0]] = volume
+                entry_prices[pairs[0]] = price
+                balance -= volume * price
+            elif signal == 'SELL' and positions[pairs[0]] > 0:
+                pnl = (price - entry_prices[pairs[0]]) * positions[pairs[0]]
+                balance += positions[pairs[0]] * price
+                pnls.append(pnl)
+                positions[pairs[0]] = 0
+
+            current_balance = balance + sum(positions[p] * price for p in positions)
+            balances.append(current_balance)
+            peak_balance = max(peak_balance, current_balance)
+            drawdown = (peak_balance - current_balance) / peak_balance
+            max_drawdown = max(max_drawdown, drawdown)
+
+        # Calculate metrics
+        returns = np.diff(balances) / balances[:-1]
+        total_return = (balances[-1] - initial_balance) / initial_balance
+        sharpe = np.mean(returns) / np.std(returns) if np.std(returns) > 0 else 0
+        downside_returns = returns[returns < 0]
+        sortino = np.mean(returns) / np.std(downside_returns) if len(downside_returns) > 0 else 0
+
+        print(f"Total Return: {total_return:.2%}")
+        print(f"Sharpe Ratio: {sharpe:.2f}")
+        print(f"Sortino Ratio: {sortino:.2f}")
+        print(f"Max Drawdown: {max_drawdown:.2%}")
+        print(f"Total Trades: {len(pnls)}")
+        print(f"Win Rate: {sum(1 for p in pnls if p > 0) / len(pnls):.2%}" if pnls else "Win Rate: N/A")

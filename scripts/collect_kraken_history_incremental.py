@@ -5,10 +5,11 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import requests
+import os
 
 PAIRS = ["XXBTZEUR", "XETHZEUR", "SOLEUR", "ADAEUR", "DOTEUR", "XXRPZEUR", "LINKEUR"]
 INTERVALS = [1, 15, 60]
-BASE_DIR = Path('/mnt/fritz_nas/Volume/kraken_research_data')
+BASE_DIR = Path(os.getenv('COLLECT_BASE_DIR','/mnt/fritz_nas/Volume/kraken_research_data'))
 STATE_DIR = BASE_DIR / '_state'
 STATE_FILE = STATE_DIR / 'collector_state.json'
 LOG_FILE = BASE_DIR / 'collector_runtime.log'

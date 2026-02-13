@@ -43,10 +43,10 @@ allocation_per_trade_percent = 20.0
 # Entry quality filter: lowered for faster re-entry after risk-off phases
 min_buy_score = 14.0
 # Sell only once profit reaches this threshold above average entry
-take_profit_percent = 10.0
+take_profit_percent = 8.0
 # Adaptive TP in strong momentum (extends up to max_take_profit_percent)
 adaptive_take_profit = true
-max_take_profit_percent = 14.0
+max_take_profit_percent = 12.0
 # Disabled by user preference (sell only at TP target)
 trailing_stop_percent = 0.0
 

@@ -30,6 +30,15 @@ All notable changes to this project are documented here.
 - Added txid-free trade summary log lines for stream-safe display (pair + size + EUR notional only).
 - Branch model simplified to `main` (live) and `dev` (research); deprecated `prod` branch.
 
+## [2026-02-13]
+
+### Added
+- Autonomous iterative improvement loop (`scripts/autosim_main_dev_loop.sh`) with 24/7 NAS data validation (30d + 1y backtests).
+- Parallel AI agents for bot optimization: book strategies (Carter, Williams, Brooks), data pattern mining, risk/metrics improvement.
+- Switched subagents to Grok model (`github-copilot/grok-code-fast-1`) for code generation and strategy ideation.
+- Enhanced evaluation metrics: Sharpe/Sortino-Ratio, Kelly Criterion position sizing, drawdown limits.
+- Data-driven pattern analysis on NAS historical trades for entry/exit signals.
+
 ### Changed
 - Sell behavior hardened around configured profit target logic (current operating rule: only sell when target criteria are met; base target 10%).
 - Signal filtering tightened in `analysis.py` to reduce low-quality entries.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Kraken Trading Bot
+After=network.target
+
+[Service]
+Type=simple
+User=felix
+WorkingDirectory=/home/felix/.openclaw/workspace/kraken_bot
+EnvironmentFile=/home/felix/.openclaw/workspace/kraken_bot/.env
+ExecStart=/home/felix/.openclaw/workspace/kraken_bot/venv/bin/python /home/felix/.openclaw/workspace/kraken_bot/main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

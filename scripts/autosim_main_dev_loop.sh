@@ -19,7 +19,27 @@ run_branch(){
   git fetch origin >>"$LOG" 2>&1 || true
   git checkout -f "$branch" >>"$LOG" 2>&1
   git reset --hard "origin/$branch" >>"$LOG" 2>&1 || true
-  USE_LOCAL_TS=1 KRAKEN_TS_DIR="/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined" \
+  # choose TS dir: 30d uses 2026 if it has recent data, otherwise fallback to Combined
+  if [ "$days" -eq 30 ]; then
+    # cutoff = 30 days ago epoch
+    CUTOFF=$(date -d '30 days ago' +%s)
+    NEWEST_TS=0
+    if [ -d "/mnt/fritz_nas/Volume/kraken_daten/2026" ]; then
+      NEWEST_FILE=$(find /mnt/fritz_nas/Volume/kraken_daten/2026 -type f -printf '%T@ %p\n' 2>/dev/null | sort -n | tail -n1 | awk '{print $1}') || true
+      if [ -n "$NEWEST_FILE" ]; then
+        NEWEST_TS=${NEWEST_FILE%%.*}
+      fi
+    fi
+    if [ "$NEWEST_TS" -ge "$CUTOFF" ] && [ "$NEWEST_TS" -ne 0 ]; then
+      KRAKEN_TS_DIR="/mnt/fritz_nas/Volume/kraken_daten/2026"
+    else
+      KRAKEN_TS_DIR="/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined"
+    fi
+  else
+    KRAKEN_TS_DIR="/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined"
+  fi
+
+  USE_LOCAL_TS=1 KRAKEN_TS_DIR="$KRAKEN_TS_DIR" \
     $PY scripts/backtest_v3_detailed.py --days "$days" --initial 200 --out "$out" >>"$LOG" 2>&1
 }
 
