@@ -157,37 +157,46 @@ def calc_rsi(prices: List[float], period: int = 14) -> float | None:
 def strategy_signal(prices: List[float]) -> Tuple[str, float]:
     if len(prices) < 50:
         return "HOLD", 0.0
-    rsi = calc_rsi(prices, 14)
-    if rsi is None:
-        return "HOLD", 0.0
-    sma20 = float(np.mean(prices[-20:]))
-    sma50 = float(np.mean(prices[-50:]))
-    recent = np.array(prices[-20:])
-    vol_pct = float(np.std(recent) / np.mean(recent) * 100) if np.mean(recent) > 0 else 0.0
-    if vol_pct < 0.15:
-        return "HOLD", 0.0
 
-    rsi_score = 0.0
-    if rsi < 30:
-        rsi_score = (30 - rsi) / 30 * 50
-    elif rsi > 70:
-        rsi_score = -((rsi - 70) / 30 * 50)
+    # Data extraction
+    current_price = prices[-1]
+    prices_arr = np.array(prices)
 
-    sma_score = max(-50.0, min(50.0, (((sma20 - sma50) / sma50) * 100) * 10))
-    total = rsi_score + sma_score
-    ratio = (sma20 - sma50) / sma50
+    # Indicators
+    sma20 = np.mean(prices_arr[-20:])
+    std20 = np.std(prices_arr[-20:])
+    sma50 = np.mean(prices_arr[-50:])
 
-    # mean reversion
-    if rsi < 33 and ratio > -0.003:
-        return "BUY", total
-    if rsi > 67 and ratio < 0.003:
-        return "SELL", total
-    # trend continuation
-    if ratio > 0.006 and 45 <= rsi <= 68:
-        return "BUY", total + 8
-    if ratio < -0.006 and 32 <= rsi <= 55:
-        return "SELL", total - 8
-    return "HOLD", total
+    upper_bb = sma20 + (2.0 * std20)
+    lower_bb = sma20 - (2.0 * std20)
+
+    # Strategy: Bollinger Band Breakout (John Carter / Al Brooks style)
+    # We want to catch the expansion.
+
+    signal = "HOLD"
+    score = 0.0
+
+    if current_price > upper_bb:
+        # Bullish Breakout
+        # Filter: Long-term trend must be up (Price > SMA50)
+        if current_price > sma50:
+            signal = "BUY"
+            # Score based on strength of breakout
+            breakout_pct = ((current_price - upper_bb) / upper_bb) * 100
+            score = 25.0 + (breakout_pct * 50.0)  # Start at 25, add boost
+
+    elif current_price < lower_bb:
+        # Bearish Breakout
+        # Filter: Long-term trend must be down (Price < SMA50)
+        if current_price < sma50:
+            signal = "SELL"
+            breakout_pct = ((lower_bb - current_price) / lower_bb) * 100
+            score = -25.0 - (breakout_pct * 50.0)  # Start at -25, add boost
+
+    # Cap score
+    score = max(-50.0, min(50.0, score))
+
+    return signal, score
 
 
 def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: float) -> dict:
