@@ -91,7 +91,7 @@ class TechnicalAnalysis:
             sma_diff_ratio = (sma_short - sma_long) / sma_long
 
             # Edge 1: Mean-reversion entries/exits
-            if rsi < 33 and sma_diff_ratio > -0.003:
+            if rsi < 30 and sma_diff_ratio > -0.003:
                 return "BUY", total_score
             if rsi > 67 and sma_diff_ratio < 0.003:
                 return "SELL", total_score
