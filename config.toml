@@ -42,13 +42,6 @@ stop_loss_percent = 2.0
 allocation_per_trade_percent = 90.0
 # Entry quality filter: lowered for faster re-entry after risk-off phases
 min_buy_score = 14.0
-# Sell only once profit reaches this threshold above average entry
-take_profit_percent = 5.0
-# Adaptive TP in strong momentum (extends up to max_take_profit_percent)
-adaptive_take_profit = true
-max_take_profit_percent = 8.0
-# Exit if price drops this % from its peak (only active if in profit)
-trailing_stop_percent = 1.0
 
 # Mentor v2 hardening (single auto-bot; no manual mode switching)
 enable_regime_filter = true
