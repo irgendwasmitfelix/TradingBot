@@ -150,14 +150,12 @@ def run_cycle(state):
 def main():
     BASE_DIR.mkdir(parents=True, exist_ok=True)
     state = load_state()
-    log('collector incremental START')
-    while True:
-        try:
-            wrote = run_cycle(state)
-            log(f'cycle complete wrote={wrote}')
-        except Exception as e:
-            log(f'ERROR cycle: {e}')
-        time.sleep(CYCLE_SLEEP_SEC)
+    log('collector incremental START (single run)')
+    try:
+        wrote = run_cycle(state)
+        log(f'cycle complete wrote={wrote}')
+    except Exception as e:
+        log(f'ERROR cycle: {e}')
 
 
 if __name__ == '__main__':

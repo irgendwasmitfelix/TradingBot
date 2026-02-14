@@ -26,7 +26,7 @@ import requests
 PAIRS = ["XXBTZEUR", "XETHZEUR", "SOLEUR", "ADAEUR", "DOTEUR", "XXRPZEUR", "LINKEUR"]
 CACHE_DIR = Path("data/ohlc_cache")
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
-LOCAL_TS_DIR = Path(os.getenv("KRAKEN_TS_DIR", "/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined"))
+LOCAL_TS_DIR = Path(os.getenv("KRAKEN_TS_DIR", "/home/felix/mnt_nas/Volume/kraken_research_data"))
 USE_LOCAL_TS = os.getenv("USE_LOCAL_TS", "1") == "1"
 
 
@@ -47,13 +47,18 @@ def _pair_file_candidates(pair: str) -> List[str]:
 def load_local_timesales_ohlc(pair: str, since_ts: int, end_ts: int, interval: int = 60) -> Dict[int, float]:
     if not LOCAL_TS_DIR.exists():
         return {}
-    fpath = None
-    for name in _pair_file_candidates(pair):
-        p = LOCAL_TS_DIR / name
-        if p.exists():
-            fpath = p
-            break
-    if fpath is None:
+    
+    # Try subfolder structure: pair/ohlc_{interval}m.csv
+    fpath = LOCAL_TS_DIR / pair / f"ohlc_{interval}m.csv"
+    if not fpath.exists():
+        # Fallback to candidates in root
+        for name in _pair_file_candidates(pair):
+            p = LOCAL_TS_DIR / name
+            if p.exists():
+                fpath = p
+                break
+    
+    if fpath is None or not fpath.exists():
         return {}
 
     bucket = max(1, int(interval)) * 60
