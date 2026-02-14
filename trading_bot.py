@@ -733,7 +733,7 @@ class TradingBot:
         self._refresh_cashflows_from_ledger(force=True)
 
         self.logger.info(f"Initial EUR Balance: {initial_balance:.2f} EUR")
-        self.logger.info("Performance baseline is fixed at startup; deposits/withdrawals are tracked separately")
+        self.logger.debug("Performance baseline is fixed at startup; deposits/withdrawals are tracked separately")
         self.logger.info(f"Take-Profit: {self.take_profit_percent}% | Stop-Loss: {self.stop_loss_percent}%")
 
         try:
