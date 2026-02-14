@@ -651,6 +651,12 @@ class TradingBot:
                         if opened_at and (time.time() - opened_at) >= (self.time_stop_hours * 3600):
                             return pair, "TIME_STOP", change_percent
 
+                    # Trailing Stop-Loss (Exit if price drops X% from peak)
+                    if self.trailing_stop_percent > 0 and change_percent > 0:
+                        drop_from_peak = ((self.peak_prices[pair] - current_price) / self.peak_prices[pair]) * 100.0
+                        if drop_from_peak >= self.trailing_stop_percent:
+                            return pair, "TRAILING_STOP", change_percent
+
             # Short position exits
             short_qty = self.short_qty.get(pair, 0.0)
             short_entry = self.short_entry_prices.get(pair, 0.0)
