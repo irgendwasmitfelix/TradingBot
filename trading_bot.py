@@ -79,6 +79,7 @@ class TradingBot:
         self.net_withdrawals_eur = 0.0
         self._last_cashflow_refresh_ts = 0
         self.cashflow_refresh_interval_sec = int(self.config.get('reporting', {}).get('cashflow_refresh_seconds', 600))
+        self.last_daily_reset_ts = int(time.time())
 
         self.valid_pairs = self._fetch_valid_trade_pairs(self.trade_pairs)
         self.trade_pairs = self.valid_pairs if self.valid_pairs else []
@@ -728,6 +729,14 @@ class TradingBot:
                 iteration += 1
 
                 current_balance = self.get_eur_balance()
+
+                # Daily reset of daily_start_balance
+                now = datetime.now()
+                last_reset = datetime.fromtimestamp(self.last_daily_reset_ts)
+                if now.day != last_reset.day or now.month != last_reset.month or now.year != last_reset.year:
+                    self.daily_start_balance = current_balance
+                    self.last_daily_reset_ts = int(time.time())
+                    self.logger.info(f"Daily start balance reset to {self.daily_start_balance:.2f} EUR")
                 if current_balance >= self.target_balance_eur:
                     self.logger.info(f"TARGET REACHED! Balance: {current_balance:.2f} EUR")
                     print(f"\nTARGET REACHED! Balance: {current_balance:.2f} EUR")
