@@ -31,7 +31,7 @@ XXRPZEUR = 5.0
 LINKEUR = 0.2
 
 [bot_settings.trade_amounts]
-trade_amount_eur = 50.0
+trade_amount_eur = 1000.0
 initial_balance = 10000.0
 target_balance_eur = 10000.0
 
