@@ -833,8 +833,9 @@ class TradingBot:
                             else:
                                 pp = self._profit_percent_from_entry(best_pair, price)
                                 req = self._required_take_profit_percent(best_pair)
+                                pp_str = f"{pp:.2f}" if pp is not None else 'n/a'
                                 self.logger.info(
-                                    f"SELL skipped for {best_pair}: profit target not reached ({pp if pp is not None else 'n/a'}% < {req:.2f}%)"
+                                    f"SELL skipped for {best_pair}: profit target not reached ({pp_str}% < {req:.2f}%)"
                                 )
                         elif self.enable_live_shorts and self.short_qty.get(best_pair, 0.0) <= 0:
                             # Open short mostly in risk-off environments or very strong negative score
@@ -901,8 +902,9 @@ class TradingBot:
 
             if require_profit_target and not self._can_sell_profit_target(pair, price):
                 pp = self._profit_percent_from_entry(pair, price)
+                pp_str = f"{pp:.2f}" if pp is not None else 'n/a'
                 self.logger.info(
-                    f"SELL blocked for {pair}: target {self.take_profit_percent:.2f}% not reached ({pp if pp is not None else 'n/a'}%)"
+                    f"SELL blocked for {pair}: target {self.take_profit_percent:.2f}% not reached ({pp_str}%)"
                 )
                 return
 
