@@ -68,7 +68,7 @@ max_consecutive_losses = 3
 pause_after_loss_streak_minutes = 180
 
 # Execution/risk guards
-max_open_positions = 3
+max_open_positions = 7
 trade_cooldown_seconds = 240
 global_trade_cooldown_seconds = 360
 # Suppress repeated empty SELL logs per pair (seconds)
