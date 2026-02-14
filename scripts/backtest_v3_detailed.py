@@ -32,6 +32,11 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 LOCAL_TS_DIR = Path(os.getenv("KRAKEN_TS_DIR", "/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined"))
 USE_LOCAL_TS = os.getenv("USE_LOCAL_TS", "1") == "1"
 
+# Backtest tunables via env (override defaults for experiments/sweeps)
+BACKTEST_SWING_TP = float(os.getenv('BACKTEST_TP_SWING', '6.0'))
+BACKTEST_SCALP_TP = float(os.getenv('BACKTEST_TP_SCALP', '1.2'))
+BACKTEST_MIN_SCORE = float(os.getenv('BACKTEST_MIN_SCORE', '0.0'))
+
 
 @dataclass
 class Position:
@@ -278,7 +283,7 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
             else:
                 pnl_pct = ((position.entry_price - px) / position.entry_price) * 100
 
-            tp = 1.2 if position.tag == "scalp" else 6.0
+            tp = BACKTEST_SCALP_TP if position.tag == "scalp" else BACKTEST_SWING_TP
             sl = -0.8 if position.tag == "scalp" else -3.0
             max_hold_h = 6 if position.tag == "scalp" else 48
 
@@ -341,7 +346,7 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
             continue
 
         # direction switch logic
-        is_scalp = abs(sc) >= 28
+        is_scalp = abs(sc) >= BACKTEST_MIN_SCORE
         direction = None
         if s == "BUY" and (risk_on or is_scalp):
             direction = 1
