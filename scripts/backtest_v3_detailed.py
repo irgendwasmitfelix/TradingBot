@@ -24,8 +24,11 @@ import numpy as np
 import requests
 
 PAIRS = ["XXBTZEUR", "XETHZEUR", "SOLEUR", "ADAEUR", "DOTEUR", "XXRPZEUR", "LINKEUR"]
-CACHE_DIR = Path("data/ohlc_cache")
+# Allow overriding the cache directory from the environment so external runners (autosim)
+# can populate OHLC data there and avoid live Kraken requests.
+CACHE_DIR = Path(os.getenv("BACKTEST_CACHE_DIR", "data/ohlc_cache"))
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# Local timesales directory (optional)
 LOCAL_TS_DIR = Path(os.getenv("KRAKEN_TS_DIR", "/mnt/fritz_nas/Volume/kraken_daten/TimeAndSales_Combined"))
 USE_LOCAL_TS = os.getenv("USE_LOCAL_TS", "1") == "1"
 
