@@ -57,7 +57,7 @@ class KrakenAPI:
             if direction not in ['buy', 'sell']:
                 self.logger.error(f"Invalid direction: {direction}. Must be 'buy' or 'sell'")
                 return None
-            if volume <= 0:
+            if float(volume) <= 0:
                 self.logger.error(f"Invalid volume: {volume}. Must be positive")
                 return None
 

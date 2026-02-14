@@ -24,7 +24,9 @@ def main():
 
     for p in PAIRS:
         for i in INTERVALS:
-            fp = BASE / p / f"ohlc_{i}m_5y.csv.gz"
+            fp_legacy = BASE / p / f"ohlc_{i}m_5y.csv.gz"
+            fp_new = BASE / p / f"ohlc_{i}m.csv"
+            fp = fp_new if fp_new.exists() else fp_legacy
             exists = fp.exists()
             size = fp.stat().st_size if exists else 0
             mtime = datetime.fromtimestamp(fp.stat().st_mtime).strftime('%Y-%m-%d %H:%M:%S') if exists else '-'

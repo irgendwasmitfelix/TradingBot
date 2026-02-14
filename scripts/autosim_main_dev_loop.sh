@@ -2,18 +2,12 @@
 set -euo pipefail
 
 # Autosim main loop with safety: lock, trap cleanup, rsync tuning, mount retries
-BASE="/home/felix/TradingBot-dev"
+BASE="/home/felix/TradingBot"
 PY="$BASE/venv/bin/python3"
-# Prefer dev venv python if present, else fall back to main venv python
-if [ -x "${PY}" ]; then
-  : # use PY as set
-else
-  PY="/home/felix/TradingBot/venv/bin/python3"
-fi
 OUT_DIR="$BASE/reports/autosim"
 NAS_OUT_DIR="/home/felix/mnt_nas_v2/Volume/kraken_research_data/autosim"
 LOG="$OUT_DIR/autosim_loop.log"
-LOCKFILE="/tmp/autosim_main_dev.lock"
+LOCKFILE="/tmp/autosim_main.lock"
 
 mkdir -p "$OUT_DIR"
 
@@ -43,11 +37,9 @@ log(){ echo "[$(date -Iseconds)] $*" | tee -a "$LOG"; }
 run_backtest(){
   local days="$1" out_json="$2"
   log "Running backtest for $days days..."
-  # use a persistent cache dir under the dev worktree so backtest can read local OHLC
-  CACHE_DIR="$BASE/data/ohlc_cache"
+  # create fresh cache for this run
+  CACHE_DIR=$(mktemp -d /tmp/sim_ohlc_$(date +%s)_XXXX)
   mkdir -p "$CACHE_DIR"
-  # clear previous cache to ensure fresh rsync
-  rm -rf "$CACHE_DIR"/* || true
 
   # rsync with retries and limited bandwidth (avoid saturating network)
   RSYNC_SRC="/home/felix/mnt_nas_v2/Volume/kraken_research_data/"
@@ -70,7 +62,7 @@ run_backtest(){
   else
     IONICE_CMD=()
   fi
-  BACKTEST_CACHE_DIR="$CACHE_DIR" timeout --kill-after=1m 6h nice -n 10 "${IONICE_CMD[@]}" "$PY" "$BASE/scripts/backtest_v3_detailed.py" --days "$days" --out "$out_json" >>"$LOG" 2>&1 || log "backtest command failed or timed out"
+  timeout --kill-after=1m 6h nice -n 10 "${IONICE_CMD[@]}" "$PY" "$BASE/scripts/backtest_v3_detailed.py" --days "$days" --out "$out_json" >>"$LOG" 2>&1 || log "backtest command failed or timed out"
 
   # cleanup cache (leftover will be removed by trap)
   if [ -d "$CACHE_DIR" ]; then
