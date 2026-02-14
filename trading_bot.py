@@ -791,10 +791,10 @@ class TradingBot:
                         score = float(self.pair_scores.get(best_pair, 0.0))
                         if self._is_temporarily_paused():
                             self.logger.warning("BUY paused: loss-streak cooling period active")
-        self.kelly_fraction = self._calculate_kelly_fraction()
+                            self.kelly_fraction = self._calculate_kelly_fraction()
                         elif self._daily_drawdown_hit():
                             self.logger.warning("BUY paused: daily loss limit reached")
-        self.kelly_fraction = self._calculate_kelly_fraction()
+                            self.kelly_fraction = self._calculate_kelly_fraction()
                         elif self.enable_regime_filter and not self._is_risk_on_regime():
                             self.logger.info("BUY skipped: regime filter is RISK_OFF")
                         elif score < self.min_buy_score:

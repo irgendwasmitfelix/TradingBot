@@ -98,24 +98,7 @@ class TechnicalAnalysis:
             # Cap score
             score = max(-50.0, min(50.0, score))
 
-<<<<<<< HEAD
-            # Edge 1: Mean-reversion entries/exits
-            if rsi < 30 and sma_diff_ratio > -0.003:
-                return "BUY", total_score
-            if rsi > 67 and sma_diff_ratio < 0.003:
-                return "SELL", total_score
-
-            # Edge 2: Trend-following / breakout continuation
-            # Participate when trend is clean and momentum is not overextended.
-            if sma_diff_ratio > 0.006 and 45 <= rsi <= 68:
-                return "BUY", total_score + 8
-            if sma_diff_ratio < -0.006 and 32 <= rsi <= 55:
-                return "SELL", total_score - 8
-
-            return "HOLD", total_score
-=======
             return signal, score
->>>>>>> origin/dev
         except Exception as e:
             self.logger.error(f"Error generating signal: {e}")
             return "HOLD", 0
