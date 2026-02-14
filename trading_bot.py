@@ -49,6 +49,7 @@ class TradingBot:
         self.min_buy_score = float(self.config.get('risk_management', {}).get('min_buy_score', 18.0))
         self.adaptive_tp_enabled = bool(self.config.get('risk_management', {}).get('adaptive_take_profit', True))
         self.max_tp_percent = float(self.config.get('risk_management', {}).get('max_take_profit_percent', 14.0))
+        self.sell_fee_buffer_percent = float(self.config.get('risk_management', {}).get('sell_fee_buffer_percent', 0.0))
         self.empty_sell_log_cooldown_sec = int(self.config.get('risk_management', {}).get('empty_sell_log_cooldown_seconds', 1800))
         self.enable_regime_filter = bool(self.config.get('risk_management', {}).get('enable_regime_filter', True))
         self.regime_benchmark_pair = str(self.config.get('risk_management', {}).get('regime_benchmark_pair', 'XBTEUR')).upper()
@@ -250,6 +251,7 @@ class TradingBot:
             self.target_volatility_pct = float(self.config.get('risk_management', {}).get('target_volatility_pct', self.target_volatility_pct))
             self.max_consecutive_losses = int(self.config.get('risk_management', {}).get('max_consecutive_losses', self.max_consecutive_losses))
             self.pause_after_loss_streak_minutes = int(self.config.get('risk_management', {}).get('pause_after_loss_streak_minutes', self.pause_after_loss_streak_minutes))
+            self.sell_fee_buffer_percent = float(self.config.get('risk_management', {}).get('sell_fee_buffer_percent', self.sell_fee_buffer_percent))
 
             if set(old_pairs) != set(self.trade_pairs):
                 self.logger.info(f"CONFIG RELOAD: trade_pairs changed {old_pairs} -> {self.trade_pairs}")
@@ -599,7 +601,9 @@ class TradingBot:
         if score > 20:
             bonus = min(4.0, (score - 20.0) / 30.0 * 4.0)
 
-        return min(self.max_tp_percent, base_tp + bonus)
+        # Add fee buffer so required TP covers fees (configurable)
+        fee_buffer = float(self.sell_fee_buffer_percent or 0.0)
+        return min(self.max_tp_percent, base_tp + bonus + fee_buffer)
 
     def _can_sell_profit_target(self, pair, current_price):
         """Only allow sell when current price is at/above configured take-profit threshold from entry."""

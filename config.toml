@@ -56,8 +56,10 @@ regime_benchmark_pair = "XBTEUR"
 regime_min_score = -12.0
 enable_mtf_regime_scoring = true
 mtf_regime_min_score = -2.0
-enable_hard_stop_loss = true
+# Do not auto-sell at a loss: disable hard stop loss
+enable_hard_stop_loss = false
 hard_stop_loss_percent = 4.0
+# Sell logic: require minimum profit and allow higher TP in bull run
 enable_time_stop = true
 time_stop_hours = 72
 # Aggressive autonomy: disable daily drawdown cutoff and favor full allocation
@@ -68,6 +70,12 @@ enable_volatility_targeting = true
 target_volatility_pct = 1.6
 max_consecutive_losses = 10
 pause_after_loss_streak_minutes = 60
+# Take-profit settings: base 3% (fees added on top), bull-run cap 7%
+take_profit_percent = 3.0
+adaptive_take_profit = true
+max_take_profit_percent = 7.0
+# Small buffer to cover fees (percent added to required TP)
+sell_fee_buffer_percent = 0.30
 
 # Execution/risk guards
 max_open_positions = 7
