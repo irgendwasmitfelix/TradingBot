@@ -40,6 +40,10 @@ class TradingBot:
         self.consecutive_losses = 0
         self.trading_paused_until_ts = 0
         self.target_balance_eur = self._get_target_balance()
+        # stop info per pair (stop_price, type)
+        self.stop_info = {}
+        # journaling path
+        self.journal_path = os.path.join(os.path.dirname(__file__), 'reports', 'trade_journal.csv')
         self.take_profit_percent = self._get_take_profit_percent()
         self.stop_loss_percent = self._get_stop_loss_percent()
         self.max_open_positions = int(self.config.get('risk_management', {}).get('max_open_positions', 3))
@@ -51,6 +55,14 @@ class TradingBot:
         self.max_tp_percent = float(self.config.get('risk_management', {}).get('max_take_profit_percent', 14.0))
         self.sell_fee_buffer_percent = float(self.config.get('risk_management', {}).get('sell_fee_buffer_percent', 0.0))
         self.empty_sell_log_cooldown_sec = int(self.config.get('risk_management', {}).get('empty_sell_log_cooldown_seconds', 1800))
+        # ATR stop config
+        self.enable_atr_stop = bool(self.config.get('risk_management', {}).get('enable_atr_stop', False))
+        self.atr_period = int(self.config.get('risk_management', {}).get('atr_period', 14))
+        self.atr_multiplier = float(self.config.get('risk_management', {}).get('atr_multiplier', 1.5))
+        self.atr_trail_multiplier = float(self.config.get('risk_management', {}).get('atr_trail_multiplier', 0.75))
+        # pyramiding
+        self.enable_pyramiding = bool(self.config.get('risk_management', {}).get('enable_pyramiding', False))
+        self.pyramiding_add_pct = float(self.config.get('risk_management', {}).get('pyramiding_add_pct', 0.5))
         self.enable_regime_filter = bool(self.config.get('risk_management', {}).get('enable_regime_filter', True))
         self.regime_benchmark_pair = str(self.config.get('risk_management', {}).get('regime_benchmark_pair', 'XBTEUR')).upper()
         self.regime_min_score = float(self.config.get('risk_management', {}).get('regime_min_score', -5.0))
@@ -252,6 +264,13 @@ class TradingBot:
             self.max_consecutive_losses = int(self.config.get('risk_management', {}).get('max_consecutive_losses', self.max_consecutive_losses))
             self.pause_after_loss_streak_minutes = int(self.config.get('risk_management', {}).get('pause_after_loss_streak_minutes', self.pause_after_loss_streak_minutes))
             self.sell_fee_buffer_percent = float(self.config.get('risk_management', {}).get('sell_fee_buffer_percent', self.sell_fee_buffer_percent))
+            # ATR + pyramiding reload
+            self.enable_atr_stop = bool(self.config.get('risk_management', {}).get('enable_atr_stop', self.enable_atr_stop))
+            self.atr_period = int(self.config.get('risk_management', {}).get('atr_period', self.atr_period))
+            self.atr_multiplier = float(self.config.get('risk_management', {}).get('atr_multiplier', self.atr_multiplier))
+            self.atr_trail_multiplier = float(self.config.get('risk_management', {}).get('atr_trail_multiplier', self.atr_trail_multiplier))
+            self.enable_pyramiding = bool(self.config.get('risk_management', {}).get('enable_pyramiding', self.enable_pyramiding))
+            self.pyramiding_add_pct = float(self.config.get('risk_management', {}).get('pyramiding_add_pct', self.pyramiding_add_pct))
 
             if set(old_pairs) != set(self.trade_pairs):
                 self.logger.info(f"CONFIG RELOAD: trade_pairs changed {old_pairs} -> {self.trade_pairs}")
@@ -589,6 +608,25 @@ class TradingBot:
             return None
         return ((current_price - entry) / entry) * 100.0
 
+    def _compute_atr(self, pair, period=None):
+        """Compute approximate ATR from stored price history (fallback to close diffs).
+        Returns ATR in price units (EUR).
+        """
+        try:
+            p = period if period is not None else self.atr_period
+            history = list(self.analysis_tool.pair_price_history.get(pair, []))
+            if not history or len(history) < 2:
+                return None
+            import numpy as _np
+            prices = _np.array(history)
+            # true range fallback: abs(diff of closes)
+            tr = _np.abs(_np.diff(prices))
+            if len(tr) < p:
+                return float(_np.mean(tr)) if len(tr) > 0 else None
+            return float(_np.mean(tr[-p:]))
+        except Exception:
+            return None
+
     def _required_take_profit_percent(self, pair):
         """Adaptive TP: in stronger momentum, demand a bit more profit before selling."""
         base_tp = self.take_profit_percent
@@ -648,7 +686,7 @@ class TradingBot:
         return max(0.01, min(0.5, kelly))
 
     def check_take_profit_or_stop_loss(self):
-        """Evaluate exits with TP first, then hard stop, then time stop."""
+        """Evaluate exits with TP first, then ATR stop, hard stop, time stop, then trailing stop."""
         for pair in self.trade_pairs:
             current_price = self.pair_prices.get(pair, 0)
             if current_price <= 0:
@@ -667,6 +705,22 @@ class TradingBot:
                     if self.take_profit_percent > 0 and change_percent >= req_tp:
                         return pair, "TAKE_PROFIT", change_percent
 
+                    # ATR stop check
+                    if self.enable_atr_stop:
+                        atr = self._compute_atr(pair)
+                        if atr is not None:
+                            stop_info = self.stop_info.get(pair, {})
+                            stop_price = stop_info.get('stop_price')
+                            # If not set, initialize based on entry
+                            if stop_price is None and self.purchase_prices.get(pair, 0) > 0:
+                                entry = self.purchase_prices.get(pair)
+                                init_stop = max(0.0, entry - (atr * self.atr_multiplier))
+                                self.stop_info[pair] = {'stop_price': init_stop, 'type': 'ATR'}
+                                stop_price = init_stop
+
+                            if stop_price is not None and current_price <= stop_price:
+                                return pair, "ATR_STOP", change_percent
+
                     if self.enable_hard_stop_loss and change_percent <= -abs(self.hard_stop_loss_percent):
                         return pair, "HARD_STOP", change_percent
 
@@ -677,6 +731,14 @@ class TradingBot:
 
                     # Trailing Stop-Loss (Exit if price drops X% from peak)
                     if self.trailing_stop_percent > 0 and change_percent > 0:
+                        # update ATR-based trailing stop if enabled
+                        if self.enable_atr_stop:
+                            atr = self._compute_atr(pair)
+                            if atr is not None:
+                                current_stop = self.stop_info.get(pair, {}).get('stop_price')
+                                new_stop = max(current_stop or 0, current_price - (atr * self.atr_trail_multiplier))
+                                self.stop_info[pair] = {'stop_price': new_stop, 'type': 'ATR_TRAIL'}
+                                # check trailing drop from peak as well
                         drop_from_peak = ((self.peak_prices[pair] - current_price) / self.peak_prices[pair]) * 100.0
                         if drop_from_peak >= self.trailing_stop_percent:
                             return pair, "TRAILING_STOP", change_percent
@@ -880,6 +942,21 @@ class TradingBot:
             self.logger.info(f"Bot stopped by user. Final balance: {final_balance:.2f} EUR")
             print(f"\nTrading bot stopped. Final Balance: {final_balance:.2f} EUR")
 
+    def _journal_trade(self, ttype, pair, volume, price, pnl_eur, reason, extra=None):
+        try:
+            import csv, os, datetime
+            os.makedirs(os.path.dirname(self.journal_path), exist_ok=True)
+            header = ['ts','type','pair','volume','price','pnl_eur','reason','extra']
+            exists = os.path.exists(self.journal_path)
+            with open(self.journal_path,'a',newline='') as fh:
+                writer = csv.writer(fh)
+                if not exists:
+                    writer.writerow(header)
+                row = [datetime.datetime.utcnow().isoformat(), ttype, pair, f"{volume:.8f}", f"{price:.6f}", f"{pnl_eur:.6f}", reason, str(extra or '')]
+                writer.writerow(row)
+        except Exception as e:
+            self.logger.error(f"Error writing trade journal: {e}")
+
     def execute_buy_order(self, pair, price):
         try:
             available_eur = self._available_eur_for_buy()
@@ -904,13 +981,22 @@ class TradingBot:
                 self._sync_account_state()
                 self.logger.info(f"BUY ORDER SUCCESS: {result}")
                 self.logger.info(f"BUY SUMMARY: {pair} {volume:.6f} (~{volume*price:.2f} EUR)")
+                # initialize ATR stop if enabled
+                if self.enable_atr_stop:
+                    atr = self._compute_atr(pair)
+                    if atr is not None:
+                        init_stop = max(0.0, price - (atr * self.atr_multiplier))
+                        self.stop_info[pair] = {'stop_price': init_stop, 'type': 'ATR'}
+                        self.logger.info(f"Initialized ATR stop for {pair}: {init_stop:.4f} (atr={atr:.4f})")
+                # journal buy
+                self._journal_trade('BUY', pair, volume, price, 0.0, 'BUY_EXECUTED', extra={'result': result})
                 print(f"\n[BUY] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
             else:
                 self.logger.error(f"BUY ORDER FAILED for {pair}")
         except Exception as e:
             self.logger.error(f"Error executing buy order: {e}", exc_info=True)
 
-    def execute_sell_order(self, pair, price, require_profit_target=True):
+    def execute_sell_order(self, pair, price, require_profit_target=True, reason=None):
         try:
             volume = self.holdings.get(pair, 0)
             if volume < self._get_min_volume(pair):
@@ -936,9 +1022,13 @@ class TradingBot:
                 now_ts = time.time()
                 self.last_trade_at[pair] = now_ts
                 self.last_global_trade_at = now_ts
+                # clear position state
                 self.purchase_prices[pair] = 0.0
                 self.peak_prices[pair] = 0.0
                 self.entry_timestamps[pair] = None
+                # clear stop info
+                if pair in self.stop_info:
+                    del self.stop_info[pair]
                 self._sync_account_state()
                 self.logger.info(f"SELL ORDER SUCCESS: {result}")
                 self.logger.info(f"SELL SUMMARY: {pair} {volume:.6f} (~{volume*price:.2f} EUR)")
@@ -946,6 +1036,8 @@ class TradingBot:
                     f"SELL PNL ESTIMATE {pair}: {est_profit_eur:.2f} EUR ({est_profit_pct if est_profit_pct is not None else 0:.2f}%)"
                 )
                 self._update_trade_metrics(pair, est_profit_eur)
+                # journal sell
+                self._journal_trade('SELL', pair, volume, price, est_profit_eur, reason or 'SELL_EXECUTED')
                 print(f"\n[SELL] {volume:.6f} {pair} (~{volume*price:.2f} EUR) - Trade #{self.trade_count}")
             else:
                 self.logger.error(f"SELL ORDER FAILED for {pair}")

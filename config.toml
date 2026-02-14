@@ -77,6 +77,16 @@ max_take_profit_percent = 7.0
 # Small buffer to cover fees (percent added to required TP)
 sell_fee_buffer_percent = 0.30
 
+# ATR stop settings (adaptive stop based on recent volatility)
+enable_atr_stop = true
+atr_period = 14
+atr_multiplier = 1.5
+atr_trail_multiplier = 0.75
+
+# Pyramiding (add-to-winner) - disabled by default
+enable_pyramiding = false
+pyramiding_add_pct = 0.5  # add when position is this fraction in profit (50% = half way to TP)
+
 # Execution/risk guards
 max_open_positions = 7
 trade_cooldown_seconds = 240
