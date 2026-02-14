@@ -601,9 +601,9 @@ class TradingBot:
                 pause_sec = self.pause_after_loss_streak_minutes * 60
                 self.trading_paused_until_ts = max(self.trading_paused_until_ts, int(time.time()) + pause_sec)
                 self.logger.warning(
-        self.kelly_fraction = self._calculate_kelly_fraction()
                     f"Loss-streak pause activated: {self.consecutive_losses} losses -> pause for {self.pause_after_loss_streak_minutes}m"
                 )
+                self.kelly_fraction = self._calculate_kelly_fraction()
 
     def _calculate_kelly_fraction(self):
         # Simple Kelly for the first pair
