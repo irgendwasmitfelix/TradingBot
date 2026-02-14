@@ -59,6 +59,7 @@ class TradingBot:
         self.mtf_regime_min_score = float(self.config.get('risk_management', {}).get('mtf_regime_min_score', -2.0))
         self.enable_time_stop = bool(self.config.get('risk_management', {}).get('enable_time_stop', True))
         self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', 72))
+        self.enable_daily_drawdown = bool(self.config.get('risk_management', {}).get('enable_daily_drawdown', True))
         self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', 3.0))
         self.risk_off_allocation_multiplier = float(self.config.get('risk_management', {}).get('risk_off_allocation_multiplier', 0.35))
         self.enable_volatility_targeting = bool(self.config.get('risk_management', {}).get('enable_volatility_targeting', True))
@@ -242,6 +243,7 @@ class TradingBot:
             self.mtf_regime_min_score = float(self.config.get('risk_management', {}).get('mtf_regime_min_score', self.mtf_regime_min_score))
             self.enable_time_stop = bool(self.config.get('risk_management', {}).get('enable_time_stop', self.enable_time_stop))
             self.time_stop_hours = int(self.config.get('risk_management', {}).get('time_stop_hours', self.time_stop_hours))
+            self.enable_daily_drawdown = bool(self.config.get('risk_management', {}).get('enable_daily_drawdown', self.enable_daily_drawdown))
             self.daily_drawdown_percent = float(self.config.get('risk_management', {}).get('daily_loss_limit_percent', self.daily_drawdown_percent))
             self.risk_off_allocation_multiplier = float(self.config.get('risk_management', {}).get('risk_off_allocation_multiplier', self.risk_off_allocation_multiplier))
             self.enable_volatility_targeting = bool(self.config.get('risk_management', {}).get('enable_volatility_targeting', self.enable_volatility_targeting))
@@ -495,15 +497,26 @@ class TradingBot:
         return max(0.0, self.get_eur_balance() * 0.98)
 
     def _daily_drawdown_hit(self):
+        # If disabled via config, never trigger the daily drawdown circuit
+        if not getattr(self, 'enable_daily_drawdown', True):
+            return False
+
         current = self.get_eur_balance()
         if self.daily_start_balance is None:
             self.daily_start_balance = current
             return False
         if self.daily_start_balance <= 0:
             return False
+
+        # Compute percentage drawdown relative to daily start
         dd = ((self.daily_start_balance - current) / self.daily_start_balance) * 100
-        if dd >= self.daily_drawdown_percent:
-            self.logger.warning(f"Daily drawdown limit reached: {dd:.2f}% >= {self.daily_drawdown_percent:.2f}%")
+
+        # Allow bypass for small absolute losses: require either percentage exceed or absolute EUR loss > threshold
+        abs_loss = max(0.0, self.daily_start_balance - current)
+        min_abs_loss = float(self.config.get('risk_management', {}).get('daily_loss_min_eur', 0.0))
+
+        if dd >= self.daily_drawdown_percent and abs_loss >= min_abs_loss:
+            self.logger.warning(f"Daily drawdown limit reached: {dd:.2f}% >= {self.daily_drawdown_percent:.2f}% (abs loss {abs_loss:.2f} EUR)")
             return True
         return False
 

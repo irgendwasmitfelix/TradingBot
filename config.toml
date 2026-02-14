@@ -39,7 +39,7 @@ target_balance_eur = 10000.0
 max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 # dynamic sizing uses this % of available EUR, capped by trade_amount_eur
-allocation_per_trade_percent = 20.0
+allocation_per_trade_percent = 90.0
 # Entry quality filter: lowered for faster re-entry after risk-off phases
 min_buy_score = 14.0
 # Sell only once profit reaches this threshold above average entry
@@ -60,12 +60,14 @@ enable_hard_stop_loss = true
 hard_stop_loss_percent = 4.0
 enable_time_stop = true
 time_stop_hours = 72
-daily_loss_limit_percent = 10.0
+# Aggressive autonomy: disable daily drawdown cutoff and favor full allocation
+enable_daily_drawdown = false
+daily_loss_limit_percent = 90.0
 risk_off_allocation_multiplier = 0.60
 enable_volatility_targeting = true
 target_volatility_pct = 1.6
-max_consecutive_losses = 3
-pause_after_loss_streak_minutes = 180
+max_consecutive_losses = 10
+pause_after_loss_streak_minutes = 60
 
 # Execution/risk guards
 max_open_positions = 7
