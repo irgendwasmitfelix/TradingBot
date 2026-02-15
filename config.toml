@@ -53,6 +53,10 @@ mtf_regime_min_score = -2.0
 enable_hard_stop_loss = false
 hard_stop_loss_percent = 4.0
 
+# Break-Even Stop-Loss (move SL to entry price once in profit)
+enable_break_even = true
+break_even_trigger_percent = 1.5
+
 # Flash-Crash Airbag (Emergency Exit for sharp drops)
 airbag_drop_threshold = 15.0
 airbag_window_minutes = 10

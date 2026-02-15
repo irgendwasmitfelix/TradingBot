@@ -60,6 +60,11 @@ class TradingBot:
         self.atr_period = int(self.config.get('risk_management', {}).get('atr_period', 14))
         self.atr_multiplier = float(self.config.get('risk_management', {}).get('atr_multiplier', 1.5))
         self.atr_trail_multiplier = float(self.config.get('risk_management', {}).get('atr_trail_multiplier', 0.75))
+        
+        # Break-even stop-loss
+        self.enable_break_even = bool(self.config.get('risk_management', {}).get('enable_break_even', True))
+        self.break_even_trigger_pct = float(self.config.get('risk_management', {}).get('break_even_trigger_percent', 1.5))
+        
         # pyramiding
         self.enable_pyramiding = bool(self.config.get('risk_management', {}).get('enable_pyramiding', False))
         self.pyramiding_add_pct = float(self.config.get('risk_management', {}).get('pyramiding_add_pct', 0.5))
@@ -314,6 +319,8 @@ class TradingBot:
             self.atr_period = int(self.config.get('risk_management', {}).get('atr_period', self.atr_period))
             self.atr_multiplier = float(self.config.get('risk_management', {}).get('atr_multiplier', self.atr_multiplier))
             self.atr_trail_multiplier = float(self.config.get('risk_management', {}).get('atr_trail_multiplier', self.atr_trail_multiplier))
+            self.enable_break_even = bool(self.config.get('risk_management', {}).get('enable_break_even', self.enable_break_even))
+            self.break_even_trigger_pct = float(self.config.get('risk_management', {}).get('break_even_trigger_percent', self.break_even_trigger_pct))
             self.enable_pyramiding = bool(self.config.get('risk_management', {}).get('enable_pyramiding', self.enable_pyramiding))
             self.pyramiding_add_pct = float(self.config.get('risk_management', {}).get('pyramiding_add_pct', self.pyramiding_add_pct))
 
@@ -750,21 +757,29 @@ class TradingBot:
                     if self.take_profit_percent > 0 and change_percent >= req_tp:
                         return pair, "TAKE_PROFIT", change_percent
 
-                    # ATR stop check
-                    if self.enable_atr_stop:
-                        atr = self._compute_atr(pair)
-                        if atr is not None:
-                            stop_info = self.stop_info.get(pair, {})
-                            stop_price = stop_info.get('stop_price')
-                            # If not set, initialize based on entry
-                            if stop_price is None and self.purchase_prices.get(pair, 0) > 0:
-                                entry = self.purchase_prices.get(pair)
-                                init_stop = max(0.0, entry - (atr * self.atr_multiplier))
-                                self.stop_info[pair] = {'stop_price': init_stop, 'type': 'ATR'}
-                                stop_price = init_stop
+                    # Break-Even Stop-Loss logic
+                    if self.enable_break_even and change_percent >= self.break_even_trigger_pct:
+                        entry_price = self.purchase_prices.get(pair, 0)
+                        if entry_price > 0:
+                            current_stop = self.stop_info.get(pair, {}).get('stop_price', 0)
+                            if current_stop < entry_price:
+                                self.stop_info[pair] = {'stop_price': entry_price, 'type': 'BREAK_EVEN'}
+                                self.logger.info(f"BREAK-EVEN activated for {pair}: SL moved to entry ({entry_price:.4f})")
 
-                            if stop_price is not None and current_price <= stop_price:
-                                return pair, "ATR_STOP", change_percent
+                    # Handle stop_info (ATR or Break-Even)
+                    stop_data = self.stop_info.get(pair, {})
+                    s_price = stop_data.get('stop_price')
+                    if s_price is not None and current_price <= s_price:
+                        return pair, stop_data.get('type', 'STOP'), change_percent
+
+                    # ATR stop initialization (if enabled and not set)
+                    if self.enable_atr_stop and pair not in self.stop_info:
+                        atr = self._compute_atr(pair)
+                        if atr is not None and self.purchase_prices.get(pair, 0) > 0:
+                            entry = self.purchase_prices.get(pair)
+                            init_stop = max(0.0, entry - (atr * self.atr_multiplier))
+                            self.stop_info[pair] = {'stop_price': init_stop, 'type': 'ATR'}
+                            self.logger.info(f"Initialized ATR stop for {pair}: {init_stop:.4f}")
 
                     if self.enable_hard_stop_loss and change_percent <= -abs(self.hard_stop_loss_percent):
                         return pair, "HARD_STOP", change_percent
