@@ -52,6 +52,11 @@ mtf_regime_min_score = -2.0
 # Do not auto-sell at a loss: disable hard stop loss
 enable_hard_stop_loss = false
 hard_stop_loss_percent = 4.0
+
+# Flash-Crash Airbag (Emergency Exit for sharp drops)
+airbag_drop_threshold = 15.0
+airbag_window_minutes = 10
+
 # Sell logic: require minimum profit and allow higher TP in bull run
 enable_time_stop = true
 time_stop_hours = 72

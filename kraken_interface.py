@@ -52,7 +52,7 @@ class KrakenAPI:
             self.logger.exception(f"Error fetching asset pairs: {e}")
             return {}
 
-    def place_order(self, pair, direction, volume, price=None, leverage=None):
+    def place_order(self, pair, direction, volume, price=None, leverage=None, post_only=False):
         try:
             if direction not in ['buy', 'sell']:
                 self.logger.error(f"Invalid direction: {direction}. Must be 'buy' or 'sell'")
@@ -63,15 +63,23 @@ class KrakenAPI:
 
             time.sleep(self.rate_limit_delay)
 
-            order_type = 'limit' if price else 'market'
+            # Use limit if price provided, otherwise market
+            # If post_only is True, force limit order
+            order_type = 'limit' if (price or post_only) else 'market'
+            
             order_params = {
                 'pair': pair,
                 'type': direction,
                 'ordertype': order_type,
                 'volume': str(volume)
             }
+            
             if price:
                 order_params['price'] = str(price)
+            
+            if post_only:
+                order_params['oflags'] = 'post-only'
+                
             if leverage:
                 order_params['leverage'] = str(leverage)
 
@@ -79,7 +87,7 @@ class KrakenAPI:
             if self._handle_error(response, f"Place {direction.upper()} Order"):
                 return None
             result = response.get('result', {})
-            self.logger.info(f"Order placed successfully: {direction} {volume} {pair}")
+            self.logger.info(f"Order placed successfully: {direction} {volume} {pair} ({order_type}, post_only={post_only})")
             return result
         except Exception as e:
             self.logger.exception(f"Error placing order: {e}")

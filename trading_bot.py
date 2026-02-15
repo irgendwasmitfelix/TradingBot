@@ -105,6 +105,51 @@ class TradingBot:
         self.valid_pairs = self._fetch_valid_trade_pairs(self.trade_pairs)
         self.trade_pairs = self.valid_pairs if self.valid_pairs else []
         self._init_pair_state(self.trade_pairs)
+        
+        # Flash-crash airbag tracking: {pair: [(timestamp, price), ...]}
+        self.price_history_airbag = {p: [] for p in self.trade_pairs}
+        self.airbag_drop_threshold = float(self.config.get('risk_management', {}).get('airbag_drop_threshold', 15.0))
+        self.airbag_window_minutes = int(self.config.get('risk_management', {}).get('airbag_window_minutes', 10))
+        
+        # Sentiment integration
+        self.news_marquee_path = "/tmp/youtube_stream/news_marquee.txt"
+        self.sentiment_pause_keywords = ["crash", "hack", "dump", "sec", "lawsuit", "regulation", "ban"]
+        self.sentiment_active = False
+
+    def _update_airbag_history(self, pair, price):
+        now = time.time()
+        history = self.price_history_airbag.get(pair, [])
+        history.append((now, price))
+        # Remove old entries
+        cutoff = now - (self.airbag_window_minutes * 60)
+        self.price_history_airbag[pair] = [h for h in history if h[0] >= cutoff]
+        
+    def _check_airbag_trigger(self, pair):
+        history = self.price_history_airbag.get(pair, [])
+        if len(history) < 2:
+            return False
+        peak_price = max(h[1] for h in history)
+        current_price = history[-1][1]
+        drop = ((peak_price - current_price) / peak_price) * 100.0
+        if drop >= self.airbag_drop_threshold:
+            self.logger.critical(f"AIRBAG TRIGGERED for {pair}: drop of {drop:.2f}% in {self.airbag_window_minutes}m")
+            return True
+        return False
+
+    def _scan_news_sentiment(self):
+        try:
+            if not os.path.exists(self.news_marquee_path):
+                return False
+            with open(self.news_marquee_path, 'r') as f:
+                content = f.read().lower()
+            found = [k for k in self.sentiment_pause_keywords if k in content]
+            if found:
+                if not self.sentiment_active:
+                    self.logger.warning(f"SENTIMENT GUARD: Keywords found in news ({', '.join(found)}). Pausing Buys.")
+                return True
+            return False
+        except Exception:
+            return False
 
     def _init_pair_state(self, pairs):
         for pair in pairs:
@@ -514,8 +559,8 @@ class TradingBot:
         return time.time() < self.trading_paused_until_ts
 
     def _available_eur_for_buy(self):
-        # keep a small reserve for fees/slippage
-        return max(0.0, self.get_eur_balance() * 0.98)
+        # SMART FEE RESERVE: leave 1.5% for fees and slippage to avoid 'Insufficient funds'
+        return max(0.0, self.get_eur_balance() * 0.985)
 
     def _daily_drawdown_hit(self):
         # If disabled via config, never trigger the daily drawdown circuit
@@ -774,6 +819,13 @@ class TradingBot:
                 pair_key = list(market_data.keys())[0]
                 current_price = float(market_data[pair_key]['c'][0])
                 self.pair_prices[pair] = current_price
+                
+                # Update airbag history and check for crash
+                self._update_airbag_history(pair, current_price)
+                if self._check_airbag_trigger(pair):
+                    # Panic sell if holding
+                    if self.holdings.get(pair, 0) >= self._get_min_volume(pair):
+                        self.execute_sell_order(pair, current_price, require_profit_target=False, reason="CRASH_AIRBAG")
 
                 signal, score = self.analysis_tool.generate_signal_with_score(market_data)
                 self.pair_signals[pair] = signal
@@ -836,6 +888,9 @@ class TradingBot:
 
                 best_pair, best_signal, best_score = self.analyze_all_pairs()
                 self._sync_account_state()
+                
+                # Sentiment scan
+                self.sentiment_active = self._scan_news_sentiment()
 
                 # Take profit / stop loss first
                 risk_pair, risk_type, change = self.check_take_profit_or_stop_loss()
@@ -900,6 +955,8 @@ class TradingBot:
                             self.logger.info("BUY skipped: regime filter is RISK_OFF")
                         elif score < self.min_buy_score:
                             self.logger.info(f"BUY skipped for {best_pair}: weak score {score:.2f} < min {self.min_buy_score:.2f}")
+                        elif self.sentiment_active:
+                            self.logger.info(f"BUY skipped for {best_pair}: sentiment guard active")
                         elif self._count_open_positions() >= self.max_open_positions:
                             self.logger.info("BUY skipped: max open positions reached")
                         else:
@@ -967,9 +1024,9 @@ class TradingBot:
                 return
 
             volume = self._calculate_volume(pair, price, available_eur=planned_eur)
-            self.logger.info(f"Placing BUY order: {volume:.6f} {pair} at ~{price:.2f} EUR")
+            self.logger.info(f"Placing BUY order (MAKER/POST-ONLY): {volume:.6f} {pair} at {price:.2f} EUR")
 
-            result = self.api_client.place_order(pair=pair, direction='buy', volume=volume)
+            result = self.api_client.place_order(pair=pair, direction='buy', volume=volume, price=price, post_only=True)
             if result:
                 self.trade_count += 1
                 now_ts = time.time()
@@ -1015,8 +1072,8 @@ class TradingBot:
             est_profit_pct = self._profit_percent_from_entry(pair, price)
             est_profit_eur = (price - avg_entry) * volume if avg_entry > 0 else 0.0
 
-            self.logger.info(f"Placing SELL order: {volume:.6f} {pair} at ~{price:.2f} EUR")
-            result = self.api_client.place_order(pair=pair, direction='sell', volume=volume)
+            self.logger.info(f"Placing SELL order (MAKER/POST-ONLY): {volume:.6f} {pair} at {price:.2f} EUR")
+            result = self.api_client.place_order(pair=pair, direction='sell', volume=volume, price=price, post_only=True)
             if result:
                 self.trade_count += 1
                 now_ts = time.time()

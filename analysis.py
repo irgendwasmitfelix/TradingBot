@@ -2,6 +2,8 @@
 
 import logging
 import numpy as np
+import os
+import json
 from collections import deque
 
 
@@ -19,11 +21,33 @@ class TechnicalAnalysis:
         self.logger = logging.getLogger(__name__)
         self.pair_price_history = {}
         self.max_history = max(rsi_period + 2, sma_long + 5)
+        self.buffer_path = os.path.join(os.path.dirname(__file__), 'data', 'history_buffer.json')
+        self._load_history()
 
     def _get_price_history(self, pair):
         if pair not in self.pair_price_history:
             self.pair_price_history[pair] = deque(maxlen=self.max_history)
         return self.pair_price_history[pair]
+
+    def _load_history(self):
+        try:
+            if os.path.exists(self.buffer_path):
+                with open(self.buffer_path, 'r') as f:
+                    data = json.load(f)
+                for pair, prices in data.items():
+                    self.pair_price_history[pair] = deque(prices, maxlen=self.max_history)
+                self.logger.info(f"Loaded price history for {len(data)} pairs from buffer")
+        except Exception as e:
+            self.logger.error(f"Error loading price history buffer: {e}")
+
+    def _save_history(self):
+        try:
+            os.makedirs(os.path.dirname(self.buffer_path), exist_ok=True)
+            data = {pair: list(prices) for pair, prices in self.pair_price_history.items()}
+            with open(self.buffer_path, 'w') as f:
+                json.dump(data, f)
+        except Exception as e:
+            self.logger.error(f"Error saving price history buffer: {e}")
 
     def calculate_rsi(self, prices):
         if len(prices) < self.rsi_period + 1:
@@ -62,6 +86,7 @@ class TechnicalAnalysis:
             close_price = float(pair_data['c'][0])
             price_history = self._get_price_history(pair_key)
             price_history.append(close_price)
+            self._save_history()
 
             if len(price_history) < self.sma_long:
                 return "HOLD", 0
