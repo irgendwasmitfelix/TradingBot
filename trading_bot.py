@@ -736,6 +736,8 @@ class TradingBot:
 
     def _can_sell_profit_target(self, pair, current_price):
         """Only allow sell when current price is at/above configured take-profit threshold from entry."""
+        if self.enable_atr_stop:
+            return True # Let winners run via trail; allow indicator-based exits without profit barrier
         profit_pct = self._profit_percent_from_entry(pair, current_price)
         if profit_pct is None:
             return False
