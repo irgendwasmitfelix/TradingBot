@@ -792,11 +792,30 @@ class TradingBot:
 
                 change_percent = self._profit_percent_from_entry(pair, current_price)
                 if change_percent is not None:
-                    req_tp = self._required_take_profit_percent(pair)
-                    if self.take_profit_percent > 0 and change_percent >= req_tp:
-                        return pair, "TAKE_PROFIT", change_percent
+                    # ATR Trailing Stop Update (Ratchet logic)
+                    if self.enable_atr_stop:
+                        atr = self._compute_atr(pair)
+                        if atr:
+                            current_stop_info = self.stop_info.get(pair, {})
+                            current_stop = current_stop_info.get('stop_price', 0)
+                            # New potential stop price
+                            potential_stop = current_price - (atr * self.atr_trail_multiplier)
+                            if potential_stop > current_stop:
+                                self.stop_info[pair] = {'stop_price': potential_stop, 'type': 'ATR_TRAIL'}
 
-                    # Break-Even Stop-Loss logic
+                    # Exit Check 1: ATR/Trailing/Break-Even Stops
+                    stop_data = self.stop_info.get(pair, {})
+                    s_price = stop_data.get('stop_price')
+                    if s_price is not None and current_price <= s_price:
+                        return pair, stop_data.get('type', 'STOP'), change_percent
+
+                    # Exit Check 2: Fixed Take Profit (ONLY if ATR trailing is NOT active)
+                    if not self.enable_atr_stop:
+                        req_tp = self._required_take_profit_percent(pair)
+                        if self.take_profit_percent > 0 and change_percent >= req_tp:
+                            return pair, "TAKE_PROFIT", change_percent
+
+                    # Break-Even Stop-Loss logic (Manual activation if preferred)
                     if self.enable_break_even and change_percent >= self.break_even_trigger_pct:
                         entry_price = self.purchase_prices.get(pair, 0)
                         if entry_price > 0:
@@ -804,21 +823,6 @@ class TradingBot:
                             if current_stop < entry_price:
                                 self.stop_info[pair] = {'stop_price': entry_price, 'type': 'BREAK_EVEN'}
                                 self.logger.info(f"BREAK-EVEN activated for {pair}: SL moved to entry ({entry_price:.4f})")
-
-                    # Handle stop_info (ATR or Break-Even)
-                    stop_data = self.stop_info.get(pair, {})
-                    s_price = stop_data.get('stop_price')
-                    if s_price is not None and current_price <= s_price:
-                        return pair, stop_data.get('type', 'STOP'), change_percent
-
-                    # ATR stop initialization (if enabled and not set)
-                    if self.enable_atr_stop and pair not in self.stop_info:
-                        atr = self._compute_atr(pair)
-                        if atr is not None and self.purchase_prices.get(pair, 0) > 0:
-                            entry = self.purchase_prices.get(pair)
-                            init_stop = max(0.0, entry - (atr * self.atr_multiplier))
-                            self.stop_info[pair] = {'stop_price': init_stop, 'type': 'ATR'}
-                            self.logger.info(f"Initialized ATR stop for {pair}: {init_stop:.4f}")
 
                     if self.enable_hard_stop_loss and change_percent <= -abs(self.hard_stop_loss_percent):
                         return pair, "HARD_STOP", change_percent
@@ -828,16 +832,8 @@ class TradingBot:
                         if opened_at and (time.time() - opened_at) >= (self.time_stop_hours * 3600):
                             return pair, "TIME_STOP", change_percent
 
-                    # Trailing Stop-Loss (Exit if price drops X% from peak)
-                    if self.trailing_stop_percent > 0 and change_percent > 0:
-                        # update ATR-based trailing stop if enabled
-                        if self.enable_atr_stop:
-                            atr = self._compute_atr(pair)
-                            if atr is not None:
-                                current_stop = self.stop_info.get(pair, {}).get('stop_price')
-                                new_stop = max(current_stop or 0, current_price - (atr * self.atr_trail_multiplier))
-                                self.stop_info[pair] = {'stop_price': new_stop, 'type': 'ATR_TRAIL'}
-                                # check trailing drop from peak as well
+                    # Legacy simple Trailing Stop-Loss
+                    if not self.enable_atr_stop and self.trailing_stop_percent > 0 and change_percent > 0:
                         drop_from_peak = ((self.peak_prices[pair] - current_price) / self.peak_prices[pair]) * 100.0
                         if drop_from_peak >= self.trailing_stop_percent:
                             return pair, "TRAILING_STOP", change_percent
