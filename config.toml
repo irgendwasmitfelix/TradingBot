@@ -83,7 +83,7 @@ sell_fee_buffer_percent = 0.30
 enable_atr_stop = true
 atr_period = 14
 atr_multiplier = 1.5
-atr_trail_multiplier = 0.75
+atr_trail_multiplier = 2.0
 
 # Pyramiding (add-to-winner) - disabled by default
 enable_pyramiding = false
