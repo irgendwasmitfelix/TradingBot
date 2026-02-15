@@ -78,7 +78,7 @@ class KrakenAPI:
                 order_params['price'] = str(price)
             
             if post_only:
-                order_params['oflags'] = 'post-only'
+                order_params['oflags'] = 'post'
                 
             if leverage:
                 order_params['leverage'] = str(leverage)
