@@ -29,15 +29,21 @@ class KrakenAPI:
             self.logger.exception(f"Error fetching account balance: {e}")
             return None
 
-    def get_market_data(self, pair):
+    def get_ohlc_data(self, pair, interval=60, since=None):
+        """Fetch OHLC data from Kraken.
+        Intervals: 1, 5, 15, 30, 60, 240, 1440, 10080, 21600
+        """
         try:
+            params = {'pair': pair, 'interval': interval}
+            if since:
+                params['since'] = since
             time.sleep(self.rate_limit_delay)
-            response = self.api.query_public('Ticker', {'pair': pair})
-            if self._handle_error(response, f"Market Data for {pair}"):
+            response = self.api.query_public('OHLC', params)
+            if self._handle_error(response, f"OHLC Data for {pair}"):
                 return None
             return response.get('result', {})
         except Exception as e:
-            self.logger.exception(f"Error fetching market data for {pair}: {e}")
+            self.logger.exception(f"Error fetching OHLC data for {pair}: {e}")
             return None
 
     def get_asset_pairs(self):

@@ -145,9 +145,11 @@ class TradingBot:
         try:
             if not os.path.exists(self.news_marquee_path):
                 return False
+            import re
             with open(self.news_marquee_path, 'r') as f:
                 content = f.read().lower()
-            found = [k for k in self.sentiment_pause_keywords if k in content]
+            # Use word boundaries to avoid false positives (like 'sec' in 'secretary')
+            found = [k for k in self.sentiment_pause_keywords if re.search(r'\b' + re.escape(k) + r'\b', content)]
             if found:
                 if not self.sentiment_active:
                     self.logger.warning(f"SENTIMENT GUARD: Keywords found in news ({', '.join(found)}). Pausing Buys.")
@@ -195,12 +197,49 @@ class TradingBot:
         except Exception:
             return 30.0
 
-    def _get_dynamic_trade_amount_eur(self, available_eur):
-        """Dynamic sizing: use smaller of configured amount and % of free EUR."""
+    def _get_dynamic_trade_amount_eur(self, pair, available_eur):
+        """Dynamic sizing: adjusted by ATR volatility and available EUR."""
         base_amount = self._get_trade_amount_eur()
-        allocation_pct = float(self.config.get('risk_management', {}).get('allocation_per_trade_percent', 2.0))
-        dynamic_amount = max(0.0, available_eur * (allocation_pct / 100.0)) * self._allocation_multiplier()
-        return min(base_amount, dynamic_amount)
+        
+        # 1. Start with percentage-based sizing
+        allocation_pct = float(self.config.get('risk_management', {}).get('allocation_per_trade_percent', 10.0))
+        amount = available_eur * (allocation_pct / 100.0)
+        
+        # 2. ATR adjustment (Vol Targeting)
+        # We target a specific % movement per trade.
+        atr = self.analysis_tool.calculate_atr(pair)
+        current_price = self.pair_prices.get(pair, 0)
+        
+        if atr and current_price > 0:
+            # How many units to buy so that 1 ATR movement = X% of trade
+            # Normalizing factor: higher volatility -> lower amount
+            volatility_ratio = (atr / current_price) * 100.0
+            # Reference: 1.5% ATR is "normal". If vol is 3%, we halve the size.
+            target_vol = 1.5 
+            vol_multiplier = target_vol / max(0.5, volatility_ratio)
+            amount *= vol_multiplier
+
+        # 3. Apply risk-off multiplier from regime
+        amount *= self._allocation_multiplier()
+        
+        # Cap at configured max base amount and available funds
+        return min(base_amount * 1.5, amount, available_eur * 0.95)
+
+    def _is_mtf_trend_bullish(self, pair):
+        """Check 1h timeframe to confirm bullish trend."""
+        try:
+            ohlc = self.api_client.get_ohlc_data(pair, interval=60) # 1h
+            if not ohlc:
+                return True # Fallback to allow trade if API fails
+            
+            data_key = list(ohlc.keys())[0]
+            # Kraken returns [time, open, high, low, close, vwap, volume, count]
+            closes = [float(row[4]) for row in ohlc[data_key]]
+            
+            return self.analysis_tool.check_mtf_trend(closes)
+        except Exception as e:
+            self.logger.error(f"MTF check failed for {pair}: {e}")
+            return True
 
     def _get_min_volume(self, pair):
         try:
@@ -974,6 +1013,8 @@ class TradingBot:
                             self.logger.info(f"BUY skipped for {best_pair}: sentiment guard active")
                         elif self._count_open_positions() >= self.max_open_positions:
                             self.logger.info("BUY skipped: max open positions reached")
+                        elif not self._is_mtf_trend_bullish(best_pair):
+                            self.logger.info(f"BUY skipped for {best_pair}: MTF trend (1h) is not bullish")
                         else:
                             self.execute_buy_order(best_pair, price)
                     elif best_signal == "SELL":
@@ -1033,7 +1074,7 @@ class TradingBot:
         try:
             available_eur = self._available_eur_for_buy()
             min_trade_eur = float(self.config.get('risk_management', {}).get('min_trade_eur', 10.0))
-            planned_eur = self._get_dynamic_trade_amount_eur(available_eur)
+            planned_eur = self._get_dynamic_trade_amount_eur(pair, available_eur)
             if planned_eur < min_trade_eur:
                 self.logger.info(f"BUY skipped for {pair}: insufficient free EUR ({available_eur:.2f})")
                 return
@@ -1123,7 +1164,7 @@ class TradingBot:
             if self.short_qty.get(pair, 0.0) > 0:
                 return
 
-            notional = min(self.max_short_notional_eur, self._get_dynamic_trade_amount_eur(self._available_eur_for_buy()))
+            notional = min(self.max_short_notional_eur, self._get_dynamic_trade_amount_eur(pair, self._available_eur_for_buy()))
             if notional <= 0 or price <= 0:
                 return
             volume = max(self._get_min_volume(pair), notional / price)

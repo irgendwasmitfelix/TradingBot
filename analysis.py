@@ -63,10 +63,25 @@ class TechnicalAnalysis:
         rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
-    def calculate_sma(self, prices, period):
-        if len(prices) < period:
+    def calculate_atr(self, pair, period=14):
+        """Calculate Average True Range using price history buffer."""
+        prices = self._get_price_history(pair)
+        if len(prices) < period + 1:
             return None
-        return np.mean(prices[-period:])
+        
+        # Approximate TR using absolute difference of consecutive closes
+        prices_list = list(prices)
+        tr = [abs(prices_list[i] - prices_list[i-1]) for i in range(1, len(prices_list))]
+        return np.mean(tr[-period:])
+
+    def check_mtf_trend(self, prices, short_p=20, long_p=50):
+        """Check if the general trend is bullish on the provided history."""
+        if len(prices) < long_p:
+            return True # Not enough data, don't block
+        
+        sma_short = np.mean(prices[-short_p:])
+        sma_long = np.mean(prices[-long_p:])
+        return sma_short > sma_long
 
     def generate_signal(self, market_data):
         signal, _ = self.generate_signal_with_score(market_data)
