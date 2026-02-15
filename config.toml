@@ -39,7 +39,7 @@ target_balance_eur = 10000.0
 max_drawdown_percent = 5.0
 stop_loss_percent = 2.0
 # dynamic sizing uses this % of available EUR, capped by trade_amount_eur
-allocation_per_trade_percent = 90.0
+allocation_per_trade_percent = 20.0
 # Entry quality filter: lowered for faster re-entry after risk-off phases
 min_buy_score = 14.0
 
