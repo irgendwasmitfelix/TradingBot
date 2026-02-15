@@ -792,13 +792,22 @@ class TradingBot:
 
                 change_percent = self._profit_percent_from_entry(pair, current_price)
                 if change_percent is not None:
-                    # ATR Trailing Stop Update (Ratchet logic)
+                    # ATR Trailing Stop Initialization & Update
                     if self.enable_atr_stop:
                         atr = self._compute_atr(pair)
                         if atr:
                             current_stop_info = self.stop_info.get(pair, {})
                             current_stop = current_stop_info.get('stop_price', 0)
-                            # New potential stop price
+                            
+                            # Initialize if missing
+                            if pair not in self.stop_info:
+                                entry = self.purchase_prices.get(pair, current_price)
+                                init_stop = max(0.0, entry - (atr * self.atr_multiplier))
+                                self.stop_info[pair] = {'stop_price': init_stop, 'type': 'ATR'}
+                                self.logger.info(f"Initialized ATR stop for {pair}: {init_stop:.4f} (atr={atr:.4f})")
+                                current_stop = init_stop
+
+                            # Ratchet up the stop: only move it UP
                             potential_stop = current_price - (atr * self.atr_trail_multiplier)
                             if potential_stop > current_stop:
                                 self.stop_info[pair] = {'stop_price': potential_stop, 'type': 'ATR_TRAIL'}
