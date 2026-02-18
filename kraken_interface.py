@@ -153,20 +153,42 @@ class KrakenAPI:
                 side_exposure = exposure_long if direction == 'buy' else exposure_short
                 side_count = count_long if direction == 'buy' else count_short
 
-                # calculate allowed notional by side cap
-                allowed_by_side = max_notional_side - side_exposure
+                # dynamic allowed notional by side cap (consider equity-based dynamic cap)
+                try:
+                    tb_resp = self.api.query_private('TradeBalance')
+                    if tb_resp.get('error'):
+                        tb = {}
+                    else:
+                        tb = tb_resp.get('result', {})
+                except Exception:
+                    tb = {}
+
+                # equity estimation ('e' or 'eb' or 'zeur')
+                equity = 0.0
+                for ek in ('e','eb','zeur'):
+                    if ek in tb:
+                        try:
+                            equity = float(tb.get(ek, 0.0))
+                            break
+                        except Exception:
+                            continue
+
+                dyn_frac = float(risk_cfg.get('dynamic_notional_fraction', 0.4))
+                configured_max = float(risk_cfg.get('max_notional_per_side', 300.0))
+                dynamic_cap = max(50.0, equity * dyn_frac)
+                allowed_by_side = min(configured_max, dynamic_cap) - side_exposure
                 if allowed_by_side < 0:
                     allowed_by_side = 0.0
 
                 # check free margin
                 try:
                     time.sleep(self.rate_limit_delay)
-                    tb = self.api.query_private('TradeBalance')
-                    if tb.get('error'):
-                        self.logger.debug(f"TradeBalance error during preflight: {tb.get('error')}")
+                    tb2 = self.api.query_private('TradeBalance')
+                    if tb2.get('error'):
+                        self.logger.debug(f"TradeBalance error during preflight: {tb2.get('error')}")
                         mf = 0.0
                     else:
-                        mf = float(tb.get('result', {}).get('mf', 0.0))
+                        mf = float(tb2.get('result', {}).get('mf', 0.0))
                 except Exception:
                     mf = 0.0
 
@@ -177,15 +199,21 @@ class KrakenAPI:
                 # final allowed notional
                 final_allowed = min(allowed_by_side, allowed_by_margin)
 
+                aggressive = bool(risk_cfg.get('aggressive_autoscale', False))
+
                 if desired_notional is not None and desired_notional > final_allowed:
-                    # scale down
+                    # scale down if aggressive, otherwise block
                     if final_allowed < min_auto_notional:
                         self.logger.info(f"Blocking order: not enough allowed notional ({final_allowed:.2f} EUR) to place requested {desired_notional:.2f} EUR")
                         return None
                     scale = final_allowed / desired_notional
                     new_volume = float(volume) * scale
-                    self.logger.info(f"Auto-scaling order volume from {volume} to {new_volume:.8f} due to risk caps (allowed {final_allowed:.2f} EUR)")
-                    volume = new_volume
+                    if aggressive:
+                        self.logger.info(f"Aggressive auto-scaling order volume from {volume} to {new_volume:.8f} due to risk caps (allowed {final_allowed:.2f} EUR)")
+                        volume = new_volume
+                    else:
+                        self.logger.info(f"Auto-scaling order volume from {volume} to {new_volume:.8f} due to risk caps (allowed {final_allowed:.2f} EUR)")
+                        volume = new_volume
                 # enforce max positions per side
                 if side_count >= max_pos_per_side:
                     self.logger.info(f"Blocking order: side already has {side_count} open positions (max {max_pos_per_side})")

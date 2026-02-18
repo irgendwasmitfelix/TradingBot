@@ -99,15 +99,20 @@ min_trade_eur = 10.0
 
 # Parallel trading caps and safety buffer
 # Minimum free margin (EUR) to leave available before placing new opens
-min_free_margin_buffer = 50.0
+min_free_margin_buffer = 20.0
 # Maximum notional exposure (EUR) allowed per side (long/short)
-max_notional_per_side = 200.0
+# This can be dynamically scaled in code relative to current equity
+max_notional_per_side = 300.0
 # Maximum number of open positions allowed per side
-max_open_positions_per_side = 10
+max_open_positions_per_side = 12
 # Enable enforcement of the parallel caps/rules
 enable_parallel_caps = true
 # Minimum allowable notional for auto-scaled orders (EUR)
-min_auto_scale_notional = 1.0
+min_auto_scale_notional = 0.5
+# Aggressive autoscale mode: prefer to scale down orders instead of blocking
+aggressive_autoscale = true
+# Dynamic notional scaling factor (fraction of equity to allow per side)
+dynamic_notional_fraction = 0.4
 
 [shorting]
 enabled = true
