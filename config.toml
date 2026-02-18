@@ -134,7 +134,7 @@ generate_trade_reports = true
 report_output_path = "reports/"
 
 [alerts]
-# Only notify on successful trades
-notify_on = ["trade"]
+# Notify on successful trades and critical errors
+notify_on = ["trade", "error"]
 notify_channel = "telegram"
 notify_min_profit_pct = 0.0
