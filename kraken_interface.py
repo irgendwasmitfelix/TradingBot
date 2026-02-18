@@ -3,6 +3,8 @@
 import krakenex
 import logging
 import time
+import toml
+import os
 
 
 class KrakenAPI:
@@ -79,6 +81,115 @@ class KrakenAPI:
                 return None
 
             time.sleep(self.rate_limit_delay)
+
+            # Load risk config (if available)
+            cfg_path = os.path.join(os.path.dirname(__file__), 'config.toml')
+            risk_cfg = {}
+            try:
+                if os.path.exists(cfg_path):
+                    cfg = toml.load(cfg_path)
+                    risk_cfg = cfg.get('risk_management', {})
+            except Exception:
+                self.logger.debug('Failed to load config for risk checks')
+
+            enable_caps = risk_cfg.get('enable_parallel_caps', False)
+            min_buffer = float(risk_cfg.get('min_free_margin_buffer', 50.0))
+            max_notional_side = float(risk_cfg.get('max_notional_per_side', 200.0))
+            max_pos_per_side = int(risk_cfg.get('max_open_positions_per_side', 10))
+            min_auto_notional = float(risk_cfg.get('min_auto_scale_notional', 1.0))
+
+            # Preflight checks and auto-scaling
+            desired_price = None
+            if price:
+                desired_price = float(price)
+            else:
+                # fetch market price to estimate notional
+                try:
+                    m = self.get_market_data(pair)
+                    # find first key
+                    if isinstance(m, dict) and m:
+                        first = next(iter(m.values()))
+                        desired_price = float(first.get('c')[0])
+                except Exception:
+                    desired_price = None
+
+            desired_notional = None
+            try:
+                if desired_price is not None:
+                    desired_notional = desired_price * float(volume)
+            except Exception:
+                desired_notional = None
+
+            # If caps enabled, evaluate current exposure
+            if enable_caps:
+                try:
+                    time.sleep(self.rate_limit_delay)
+                    op = self.api.query_private('OpenPositions')
+                    if op.get('error'):
+                        self.logger.debug(f"OpenPositions error during preflight: {op.get('error')}")
+                        op_result = {}
+                    else:
+                        op_result = op.get('result', {})
+                except Exception as e:
+                    self.logger.debug(f"Exception fetching open positions: {e}")
+                    op_result = {}
+
+                exposure_long = 0.0
+                exposure_short = 0.0
+                count_long = 0
+                count_short = 0
+                for pid, p in op_result.items():
+                    try:
+                        c = float(p.get('cost', 0))
+                        if p.get('type') == 'sell':
+                            exposure_short += c
+                            count_short += 1
+                        else:
+                            exposure_long += c
+                            count_long += 1
+                    except Exception:
+                        continue
+
+                side_exposure = exposure_long if direction == 'buy' else exposure_short
+                side_count = count_long if direction == 'buy' else count_short
+
+                # calculate allowed notional by side cap
+                allowed_by_side = max_notional_side - side_exposure
+                if allowed_by_side < 0:
+                    allowed_by_side = 0.0
+
+                # check free margin
+                try:
+                    time.sleep(self.rate_limit_delay)
+                    tb = self.api.query_private('TradeBalance')
+                    if tb.get('error'):
+                        self.logger.debug(f"TradeBalance error during preflight: {tb.get('error')}")
+                        mf = 0.0
+                    else:
+                        mf = float(tb.get('result', {}).get('mf', 0.0))
+                except Exception:
+                    mf = 0.0
+
+                # compute allowed by margin (simple estimate using leverage)
+                lev = float(leverage) if leverage else 1.0
+                allowed_by_margin = max(0.0, (mf - min_buffer) * lev)
+
+                # final allowed notional
+                final_allowed = min(allowed_by_side, allowed_by_margin)
+
+                if desired_notional is not None and desired_notional > final_allowed:
+                    # scale down
+                    if final_allowed < min_auto_notional:
+                        self.logger.info(f"Blocking order: not enough allowed notional ({final_allowed:.2f} EUR) to place requested {desired_notional:.2f} EUR")
+                        return None
+                    scale = final_allowed / desired_notional
+                    new_volume = float(volume) * scale
+                    self.logger.info(f"Auto-scaling order volume from {volume} to {new_volume:.8f} due to risk caps (allowed {final_allowed:.2f} EUR)")
+                    volume = new_volume
+                # enforce max positions per side
+                if side_count >= max_pos_per_side:
+                    self.logger.info(f"Blocking order: side already has {side_count} open positions (max {max_pos_per_side})")
+                    return None
 
             # Use limit if price provided, otherwise market
             # If post_only is True, force limit order
