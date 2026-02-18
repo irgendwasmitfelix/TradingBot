@@ -132,3 +132,9 @@ results_output_path = "backtest_results/"
 [reporting]
 generate_trade_reports = true
 report_output_path = "reports/"
+
+[alerts]
+# Only notify on successful trades
+notify_on = ["trade"]
+notify_channel = "telegram"
+notify_min_profit_pct = 0.0
