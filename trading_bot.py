@@ -45,6 +45,11 @@ class TradingBot:
         self.stop_info = {}
         # journaling path
         self.journal_path = os.path.join(os.path.dirname(__file__), 'reports', 'trade_journal.csv')
+        # structured JSONL trade log for observability
+        self.json_journal_path = os.path.join(os.path.dirname(__file__), 'logs', 'trade_events.jsonl')
+        os.makedirs(os.path.dirname(self.json_journal_path), exist_ok=True)
+        # manual kill-switch file: if present, bot will pause buys
+        self.kill_switch_path = os.path.join(os.path.dirname(__file__), 'PAUSE')
         self.take_profit_percent = self._get_take_profit_percent()
         self.stop_loss_percent = self._get_stop_loss_percent()
         self.max_open_positions = int(self.config.get('risk_management', {}).get('max_open_positions', 3))
@@ -932,6 +937,7 @@ class TradingBot:
 
         initial_balance = self.get_eur_balance()
         self.initial_balance_eur = initial_balance
+        self.peak_balance = initial_balance
         self.daily_start_balance = initial_balance
         self._sync_account_state()
         self._refresh_cashflows_from_ledger(force=True)
@@ -977,6 +983,21 @@ class TradingBot:
 
                 self._refresh_cashflows_from_ledger()
                 adjusted_pnl = self._adjusted_pnl_eur(current_balance)
+                # update peak balance and compute portfolio drawdown
+                try:
+                    self.peak_balance = max(getattr(self, 'peak_balance', current_balance), current_balance)
+                    current_dd_pct = 0.0
+                    if self.peak_balance > 0:
+                        current_dd_pct = ((self.peak_balance - current_balance) / self.peak_balance) * 100.0
+                        # enforce portfolio max drawdown circuit breaker
+                        max_dd_cfg = float(self.config.get('risk_management', {}).get('max_drawdown_percent', 10.0))
+                        if current_dd_pct >= max_dd_cfg:
+                            pause_sec = int(self.pause_after_loss_streak_minutes * 60)
+                            self.trading_paused_until_ts = max(self.trading_paused_until_ts, int(time.time()) + pause_sec)
+                            self.logger.warning(f"Portfolio max-drawdown hit: {current_dd_pct:.2f}% >= {max_dd_cfg}%. Pausing buys for {self.pause_after_loss_streak_minutes} minutes.")
+                except Exception:
+                    current_dd_pct = 0.0
+
                 regime_state = "RISK_ON" if self._is_risk_on_regime() else "RISK_OFF"
                 pause_state = "PAUSED" if self._is_temporarily_paused() else "ACTIVE"
 
@@ -1076,7 +1097,7 @@ class TradingBot:
 
     def _journal_trade(self, ttype, pair, volume, price, pnl_eur, reason, extra=None):
         try:
-            import csv, os, datetime
+            import csv, os, datetime, json
             os.makedirs(os.path.dirname(self.journal_path), exist_ok=True)
             header = ['ts','type','pair','volume','price','pnl_eur','reason','extra']
             exists = os.path.exists(self.journal_path)
@@ -1086,6 +1107,32 @@ class TradingBot:
                     writer.writerow(header)
                 row = [datetime.datetime.utcnow().isoformat(), ttype, pair, f"{volume:.8f}", f"{price:.6f}", f"{pnl_eur:.6f}", reason, str(extra or '')]
                 writer.writerow(row)
+            # also write structured JSON line for observability
+            try:
+                os.makedirs(os.path.dirname(self.json_journal_path), exist_ok=True)
+                j = {
+                    'ts': datetime.datetime.utcnow().isoformat(),
+                    'type': ttype,
+                    'pair': pair,
+                    'volume': float(volume),
+                    'price': float(price),
+                    'pnl_eur': float(pnl_eur),
+                    'reason': reason,
+                    'extra': extra or {},
+                    'balance_eur': float(self.get_eur_balance()),
+                    'consecutive_losses': int(self.consecutive_losses),
+                }
+                # include current drawdown if available
+                try:
+                    peak = float(getattr(self, 'peak_balance', j['balance_eur']))
+                    if peak > 0:
+                        j['current_drawdown_pct'] = round(((peak - j['balance_eur']) / peak) * 100.0, 2)
+                except Exception:
+                    pass
+                with open(self.json_journal_path, 'a') as jf:
+                    jf.write(json.dumps(j) + "\n")
+            except Exception as e:
+                self.logger.error(f"Error writing JSON trade log: {e}")
         except Exception as e:
             self.logger.error(f"Error writing trade journal: {e}")
 

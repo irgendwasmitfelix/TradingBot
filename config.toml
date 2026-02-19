@@ -36,7 +36,7 @@ initial_balance = 10000.0
 target_balance_eur = 10000.0
 
 [risk_management]
-max_drawdown_percent = 5.0
+max_drawdown_percent = 10.0
 stop_loss_percent = 2.0
 # dynamic sizing uses this % of available EUR, capped by trade_amount_eur
 allocation_per_trade_percent = 20.0
@@ -73,7 +73,7 @@ daily_loss_limit_percent = 90.0
 risk_off_allocation_multiplier = 0.60
 enable_volatility_targeting = true
 target_volatility_pct = 1.6
-max_consecutive_losses = 10
+max_consecutive_losses = 3
 pause_after_loss_streak_minutes = 60
 # Take-profit settings: base 3% (fees added on top), bull-run cap 7%
 take_profit_percent = 3.0
