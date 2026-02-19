@@ -228,6 +228,8 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
     bars_above_initial = 0
     bars_below_initial = 0
 
+    equity_history: List[Tuple[int, float]] = []
+
     def equity() -> float:
         eq = cash
         for p in PAIRS:
@@ -254,6 +256,11 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
         risk_on = benchmark_score >= -12.0
 
         eq_now = equity()
+        # record equity history for metrics
+        try:
+            equity_history.append((ts, eq_now))
+        except Exception:
+            pass
         bars_total += 1
         if eq_now >= initial_eur:
             bars_above_initial += 1
@@ -402,6 +409,59 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
     above_pct = (bars_above_initial / bars_total * 100.0) if bars_total else 0.0
     below_pct = (bars_below_initial / bars_total * 100.0) if bars_total else 0.0
 
+    # compute additional metrics: sharpe, calmar, longest drawdown duration and recovery
+    eq_series = [v for (_ts, v) in equity_history]
+    returns = []
+    for i in range(1, len(eq_series)):
+        prev = eq_series[i-1]
+        cur = eq_series[i]
+        if prev > 0:
+            returns.append((cur / prev) - 1.0)
+    period_hours = 1.0
+    annual_factor = (24.0 * 365.0) / period_hours
+    mean_ret = float(np.mean(returns)) if returns else 0.0
+    std_ret = float(np.std(returns, ddof=1)) if len(returns) > 1 else 0.0
+    sharpe = (mean_ret / std_ret) * (annual_factor ** 0.5) if std_ret > 0 else None
+    ann_return = ((cash / initial_eur) ** (annual_factor / max(1.0, len(eq_series)))) - 1.0 if len(eq_series) > 0 else 0.0
+    calmar = None
+    if max_dd > 0:
+        calmar = ann_return / (max_dd / 100.0) if max_dd > 0 else None
+
+    # drawdown duration & recovery: compute longest drawdown time from peak to trough and time to recover to that peak
+    longest_dd_seconds = 0
+    recovery_seconds = None
+    if equity_history:
+        peak_ts, peak_val = equity_history[0]
+        trough_ts, trough_val = peak_ts, peak_val
+        for ts, val in equity_history:
+            if val > peak_val:
+                # recovered to new peak
+                peak_ts, peak_val = ts, val
+                trough_ts, trough_val = ts, val
+            if val < trough_val:
+                trough_ts, trough_val = ts, val
+            if peak_val > 0:
+                dd = (peak_val - val) / peak_val
+                # if this is the largest dd so far, record duration
+                if dd * 100.0 >= max_dd:
+                    # duration from peak to this trough
+                    longest_dd_seconds = max(longest_dd_seconds, ts - peak_ts)
+        # try to find recovery time: first time after trough when equity >= previous peak
+        for i in range(len(equity_history)):
+            ts, val = equity_history[i]
+            if val < peak_val:
+                # find next time val >= peak_val
+                for j in range(i+1, len(equity_history)):
+                    ts2, val2 = equity_history[j]
+                    if val2 >= peak_val:
+                        recovery_seconds = ts2 - ts
+                        break
+                if recovery_seconds:
+                    break
+        longest_dd_hours = longest_dd_seconds / 3600.0
+    else:
+        longest_dd_hours = 0.0
+
     result = {
         "period_days": days,
         "initial_eur": round(initial_eur, 2),
@@ -423,6 +483,13 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
             "fee_rate": fee_rate,
             "slippage_bps": slippage_bps,
             "mode": "research-estimator-long-short-scalp",
+        },
+        "metrics": {
+            "sharpe": round(sharpe, 3) if sharpe is not None else None,
+            "calmar": round(calmar, 3) if calmar is not None else None,
+            "annual_return_pct": round(ann_return * 100.0, 2),
+            "longest_drawdown_hours": round(longest_dd_hours, 2),
+            "drawdown_recovery_seconds": int(recovery_seconds) if recovery_seconds else None,
         },
     }
     return result
