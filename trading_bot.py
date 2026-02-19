@@ -141,8 +141,7 @@ class TradingBot:
                 'consecutive_losses': int(getattr(self,'consecutive_losses',0))
             }
             with open(logp,'a') as f:
-                f.write(json.dumps(entry)+"
-")
+                f.write(json.dumps(entry) + "\n")
             # call optional notifier script
             script = os.path.join(os.path.dirname(__file__), 'scripts', 'notify_pause.sh')
             if os.path.exists(script) and os.access(script, os.X_OK):
