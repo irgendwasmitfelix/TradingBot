@@ -204,7 +204,70 @@ def strategy_signal(prices: List[float]) -> Tuple[str, float]:
     return signal, score
 
 
-def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: float) -> dict:
+def compute_slip_for_pair(hist_prices: List[float], slippage_bps: float, model: str = 'fixed') -> float:
+    """Compute slip fraction (e.g. 0.0008 for 8 bps) for a pair given recent history and model."""
+    base = max(0.0, float(slippage_bps)) / 10000.0
+    if model == 'fixed' or not hist_prices or len(hist_prices) < 5:
+        return base
+    try:
+        arr = np.array(hist_prices)
+        rets = np.diff(np.log(arr))
+        vol = float(np.std(rets)) if rets.size > 0 else 0.0
+        # scale multiplier conservatively: small factor of realized vol
+        multiplier = 1.0 + min(5.0, vol * 10.0)
+        slip = base * multiplier
+        # cap slip to sensible limit
+        return min(slip, 0.2)
+    except Exception:
+        return base
+
+
+def simulate_twap_entry(pair: str, direction: int, allocation: float, idx: int, all_ts: List[int], series: Dict[str, Dict[int, float]], hist: Dict[str, deque], slices: int, slippage_bps: float, slippage_model: str, fee_rate: float):
+    """Simulate a TWAP-style entry across the next `slices` timestamps. Returns (entry_price, total_qty, total_fee).
+
+    If insufficient future timestamps exist, uses available ones and repeats last price.
+    """
+    S = max(1, int(slices))
+    total_qty = 0.0
+    total_fee = 0.0
+    executed_notional = 0.0
+    slice_notional = allocation / S
+    prices = []
+    n_ts = len(all_ts)
+    for k in range(S):
+        j = idx + k
+        if j < n_ts:
+            t = all_ts[j]
+            p = series.get(pair, {}).get(t)
+            if p is None:
+                # fallback to last known price in hist or series
+                p = list(hist.get(pair, []))[-1] if hist.get(pair) else None
+            if p is None:
+                # cannot execute, return immediate placeholder
+                p = list(series.get(pair, {}).values())[-1] if series.get(pair) else 0.0
+        else:
+            # repeat last available
+            p = list(hist.get(pair, []))[-1] if hist.get(pair) else (list(series.get(pair, {}).values())[-1] if series.get(pair) else 0.0)
+        prices.append(p)
+    # simulate slices
+    qtys = []
+    for p in prices:
+        if p <= 0:
+            qtys.append(0.0)
+            continue
+        slip = compute_slip_for_pair(list(hist.get(pair, [])), slippage_bps, slippage_model)
+        exec_px = p * (1.0 + slip) if direction == 1 else p * (1.0 - slip)
+        q = slice_notional / exec_px if exec_px > 0 else 0.0
+        fee = exec_px * q * fee_rate
+        qtys.append(q)
+        total_qty += q
+        total_fee += fee
+        executed_notional += exec_px * q
+    entry_price = (executed_notional / total_qty) if total_qty > 0 else (prices[0] if prices else 0.0)
+    return entry_price, total_qty, total_fee
+
+
+def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: float, execution_mode: str = 'immediate', twap_slices: int = 3, slippage_model: str = 'fixed') -> dict:
     end_ts = int(datetime.now(timezone.utc).timestamp())
     since = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
     series = {p: fetch_ohlc(p, since, end_ts, 60) for p in PAIRS}
@@ -241,7 +304,7 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
                 eq += (position.entry_price - px) * position.qty
         return eq
 
-    for ts in all_ts:
+    for idx, ts in enumerate(all_ts):
         for p in PAIRS:
             px = series[p].get(ts)
             if px is None:
@@ -343,7 +406,7 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
             continue
 
         # Fee/slippage drag gate: skip weak edges likely to be consumed by costs.
-        # Round-trip drag ~= 2*fee + 2*slip (in % terms)
+        # Round-trip drag ~= 2*fee + 2*slip (in % terms) — use base slippage for gate
         rt_cost_pct = (2 * fee_rate + 2 * (slippage_bps / 10000.0)) * 100.0
         edge_est_pct = abs(sc) * 0.11  # calibrated proxy: score->expected move
         if edge_est_pct < (rt_cost_pct * 1.25):
@@ -359,15 +422,30 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
         if direction is None:
             continue
 
-        slip = slippage_bps / 10000.0
-        entry_px = px * (1 + slip) if direction == 1 else px * (1 - slip)
-        qty = allocation / entry_px
+        # determine entry execution depending on execution_mode
+        if execution_mode == 'immediate':
+            slip = compute_slip_for_pair(list(hist.get(bp, [])), slippage_bps, slippage_model)
+            entry_px = px * (1 + slip) if direction == 1 else px * (1 - slip)
+            qty = allocation / entry_px if entry_px > 0 else 0.0
+            total_fee = entry_px * qty * fee_rate
+        elif execution_mode in ('twap', 'vwap'):
+            # simulate TWAP/VWAP over next n slabs
+            entry_px, qty, total_fee = simulate_twap_entry(bp, direction, allocation, idx, all_ts, series, hist, twap_slices, slippage_bps, slippage_model, fee_rate)
+        else:
+            # fallback to immediate
+            slip = compute_slip_for_pair(list(hist.get(bp, [])), slippage_bps, slippage_model)
+            entry_px = px * (1 + slip) if direction == 1 else px * (1 - slip)
+            qty = allocation / entry_px if entry_px > 0 else 0.0
+            total_fee = entry_px * qty * fee_rate
+
+        if qty <= 0:
+            continue
 
         if direction == 1:
-            total = allocation * (1 + fee_rate)
-            if total > cash:
+            cash_required = allocation + total_fee
+            if cash_required > cash:
                 continue
-            cash -= total
+            cash -= cash_required
         else:
             # reserve short notional from cash (conservative margin model)
             if allocation > cash:
@@ -383,7 +461,7 @@ def run_backtest(days: int, initial_eur: float, fee_rate: float, slippage_bps: f
         px = price.get(p, 0.0)
         if position.side == 0 or px <= 0:
             continue
-        slip = slippage_bps / 10000.0
+        slip = compute_slip_for_pair(list(hist.get(p, [])), slippage_bps, slippage_model)
         if position.side == 1:
             exit_px = px * (1 - slip)
             gross = position.qty * exit_px
@@ -501,10 +579,13 @@ def main() -> None:
     ap.add_argument("--initial", type=float, default=200.0)
     ap.add_argument("--fee", type=float, default=0.0026)
     ap.add_argument("--slippage-bps", type=float, default=8.0)
+    ap.add_argument("--execution-mode", choices=["immediate","twap","vwap"], default="immediate")
+    ap.add_argument("--twap-slices", type=int, default=3)
+    ap.add_argument("--slippage-model", choices=["fixed","volatility"], default="fixed")
     ap.add_argument("--out", type=str, default="reports/v3_backtest_detailed.json")
     args = ap.parse_args()
 
-    result = run_backtest(args.days, args.initial, args.fee, args.slippage_bps)
+    result = run_backtest(args.days, args.initial, args.fee, args.slippage_bps, execution_mode=args.execution_mode, twap_slices=args.twap_slices, slippage_model=args.slippage_model)
     print(json.dumps(result, indent=2))
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
