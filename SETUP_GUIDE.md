@@ -12,7 +12,7 @@
 
 ```bash
 git clone <repository-url>
-cd kraken_bot
+cd TradingBot
 ```
 
 ### 2. Create a Virtual Environment (Recommended)
@@ -121,7 +121,7 @@ python main.py
 
 Edit `config.toml` to customize:
 
-- **Trading Pair**: `trade_pair` (default: "BTC/USD")
+- **Trading Pair**: `trade_pair` (default: "XBTEUR" — EUR pairs recommended; check `config.toml` for exact symbols)
 - **Trade Volume**: `trade_volume` (amount per trade)
 - **Risk Settings**: Stop-loss and drawdown limits
 - **Logging**: Log level and output path
@@ -129,7 +129,7 @@ Edit `config.toml` to customize:
 ## Directory Structure
 
 ```
-kraken_bot/
+TradingBot/
 ├── main.py                 # Entry point
 ├── trading_bot.py          # Core trading logic
 ├── kraken_interface.py     # Kraken API wrapper
@@ -230,4 +230,4 @@ Trading cryptocurrencies involves significant risk. This bot is provided as-is f
 
 ---
 
-**Last Updated**: February 9, 2026
+**Last Updated**: February 19, 2026

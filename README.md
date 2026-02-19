@@ -76,3 +76,7 @@ Expected storage footprint (7 pairs):
 ---
 
 Status: active development
+
+**Last Updated**: February 19, 2026
+
+Note: this repository includes a systemd service unit (kraken-bot.service). To run the bot as a background service, install and enable the provided unit (see kraken-bot.service).
