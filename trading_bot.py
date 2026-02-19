@@ -128,6 +128,31 @@ class TradingBot:
         self.sentiment_pause_keywords = ["crash", "hack", "dump", "sec", "lawsuit", "regulation", "ban"]
         self.sentiment_active = False
 
+    def _notify_pause(self, reason):
+        """Log and attempt to notify an external channel when a trading pause activates."""
+        try:
+            import json, subprocess, datetime, os
+            logp = os.path.join(os.path.dirname(__file__), 'logs', 'pause_events.log')
+            os.makedirs(os.path.dirname(logp), exist_ok=True)
+            entry = {
+                'ts': datetime.datetime.utcnow().isoformat(),
+                'reason': reason,
+                'balance': float(self.get_eur_balance()),
+                'consecutive_losses': int(getattr(self,'consecutive_losses',0))
+            }
+            with open(logp,'a') as f:
+                f.write(json.dumps(entry)+"
+")
+            # call optional notifier script
+            script = os.path.join(os.path.dirname(__file__), 'scripts', 'notify_pause.sh')
+            if os.path.exists(script) and os.access(script, os.X_OK):
+                try:
+                    subprocess.Popen([script, reason], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def _update_airbag_history(self, pair, price):
         now = time.time()
         history = self.price_history_airbag.get(pair, [])
