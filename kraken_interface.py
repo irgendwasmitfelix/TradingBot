@@ -317,6 +317,66 @@ class KrakenAPI:
             self.logger.exception(f"Error cancelling order {order_id}: {e}")
             return None
 
+    def place_order_with_fallback(self, pair, direction, volume, price=None, leverage=None, post_only=False, reduce_only=False, timeout_sec=30):
+        """Attempt a limit/post-only order first (if price provided), then fallback to market after timeout if not filled.
+
+        This is a conservative fallback wrapper around place_order. It only takes effect when price is provided or post_only is True.
+        """
+        try:
+            # If no price specified, just place market order
+            if not price and not post_only:
+                return self.place_order(pair, direction, volume, price=None, leverage=leverage, post_only=False, reduce_only=reduce_only)
+
+            # place limit/post-only order
+            order = self.place_order(pair, direction, volume, price=price, leverage=leverage, post_only=post_only, reduce_only=reduce_only)
+            if not order:
+                self.logger.debug("Initial limit order failed or was rejected; placing market instead")
+                return self.place_order(pair, direction, volume, price=None, leverage=leverage, post_only=False, reduce_only=reduce_only)
+
+            txid = None
+            # Extract txid depending on API result structure
+            if isinstance(order, dict):
+                txs = order.get('txid') or order.get('tx') or None
+                if isinstance(txs, list) and txs:
+                    txid = txs[0]
+                elif isinstance(txs, str):
+                    txid = txs
+
+            # If no txid, assume filled or cannot monitor -- return what we have
+            if not txid:
+                return order
+
+            # Poll open orders until filled or timeout
+            start = time.time()
+            while time.time() - start < float(timeout_sec):
+                time.sleep(self.rate_limit_delay)
+                open_orders = self.get_open_orders() or {}
+                # open_orders structure may contain txids under 'open'
+                # check for presence of txid
+                found = False
+                try:
+                    # open_orders may be a dict with 'open' key
+                    if isinstance(open_orders, dict):
+                        open_map = open_orders.get('open', open_orders)
+                        if txid in open_map or any(str(txid) in k for k in open_map.keys()):
+                            found = True
+                except Exception:
+                    found = True
+                if not found:
+                    # order not found among open orders -> likely filled
+                    self.logger.info(f"Order {txid} no longer open (likely filled)")
+                    return order
+            # timeout reached, cancel and send market order
+            self.logger.info(f"Timeout waiting for order {txid}; cancelling and placing market order")
+            try:
+                self.cancel_order(txid)
+            except Exception:
+                self.logger.debug("Cancel failed or no longer valid")
+            return self.place_order(pair, direction, volume, price=None, leverage=leverage, post_only=False, reduce_only=reduce_only)
+        except Exception as e:
+            self.logger.exception(f"Error in place_order_with_fallback: {e}")
+            return None
+
     def get_ledgers(self, asset=None, start=None, fetch_all=False, max_pages=200):
         """Fetch ledger entries (deposits/withdrawals/trades/etc)."""
         try:
