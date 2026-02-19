@@ -61,6 +61,9 @@ break_even_trigger_percent = 1.5
 airbag_drop_threshold = 15.0
 airbag_window_minutes = 10
 
+# Optional news/sentiment guard (disabled by default)
+enable_sentiment_guard = false
+
 # Sell logic: require minimum profit and allow higher TP in bull run
 enable_time_stop = true
 time_stop_hours = 72

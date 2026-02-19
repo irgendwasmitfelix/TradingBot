@@ -5,6 +5,7 @@ import logging
 import time
 import toml
 import os
+from order_lock import acquire_order_lock
 
 
 class KrakenAPI:
@@ -71,7 +72,7 @@ class KrakenAPI:
             self.logger.exception(f"Error fetching asset pairs: {e}")
             return {}
 
-    def place_order(self, pair, direction, volume, price=None, leverage=None, post_only=False):
+    def place_order(self, pair, direction, volume, price=None, leverage=None, post_only=False, reduce_only=False):
         try:
             if direction not in ['buy', 'sell']:
                 self.logger.error(f"Invalid direction: {direction}. Must be 'buy' or 'sell'")
@@ -120,25 +121,50 @@ class KrakenAPI:
             except Exception:
                 desired_notional = None
 
-            # If caps enabled, evaluate current exposure
-            if enable_caps:
+            op_result = {}
+            if enable_caps or reduce_only:
                 try:
                     time.sleep(self.rate_limit_delay)
                     op = self.api.query_private('OpenPositions')
                     if op.get('error'):
                         self.logger.debug(f"OpenPositions error during preflight: {op.get('error')}")
-                        op_result = {}
                     else:
                         op_result = op.get('result', {})
                 except Exception as e:
                     self.logger.debug(f"Exception fetching open positions: {e}")
-                    op_result = {}
 
+            # Reduce-only safety: never enlarge net exposure; clamp volume to closable amount.
+            if reduce_only:
+                target_type = 'sell' if direction == 'buy' else 'buy'
+                closable_volume = 0.0
+                for _, p in op_result.items():
+                    try:
+                        if str(p.get('pair', '')).upper() != str(pair).upper():
+                            continue
+                        if str(p.get('type', '')).lower() != target_type:
+                            continue
+                        closable_volume += float(p.get('vol', 0.0) or 0.0)
+                    except Exception:
+                        continue
+
+                if closable_volume <= 0:
+                    self.logger.info(f"Reduce-only block: no opposing open position to close for {pair}")
+                    return None
+
+                req_vol = float(volume)
+                if req_vol > closable_volume:
+                    self.logger.info(
+                        f"Reduce-only clamp on {pair}: requested {req_vol:.8f} -> {closable_volume:.8f}"
+                    )
+                    volume = closable_volume
+
+            # If caps enabled, evaluate current exposure (only for opening/increasing orders)
+            if enable_caps and not reduce_only:
                 exposure_long = 0.0
                 exposure_short = 0.0
                 count_long = 0
                 count_short = 0
-                for pid, p in op_result.items():
+                for _, p in op_result.items():
                     try:
                         c = float(p.get('cost', 0))
                         if p.get('type') == 'sell':
@@ -165,7 +191,7 @@ class KrakenAPI:
 
                 # equity estimation ('e' or 'eb' or 'zeur')
                 equity = 0.0
-                for ek in ('e','eb','zeur'):
+                for ek in ('e', 'eb', 'zeur'):
                     if ek in tb:
                         try:
                             equity = float(tb.get(ek, 0.0))
@@ -174,7 +200,7 @@ class KrakenAPI:
                             continue
 
                 dyn_frac = float(risk_cfg.get('dynamic_notional_fraction', 0.4))
-                configured_max = float(risk_cfg.get('max_notional_per_side', 300.0))
+                configured_max = float(max_notional_side)
                 dynamic_cap = max(50.0, equity * dyn_frac)
                 allowed_by_side = min(configured_max, dynamic_cap) - side_exposure
                 if allowed_by_side < 0:
@@ -204,19 +230,30 @@ class KrakenAPI:
                 if desired_notional is not None and desired_notional > final_allowed:
                     # scale down if aggressive, otherwise block
                     if final_allowed < min_auto_notional:
-                        self.logger.info(f"Blocking order: not enough allowed notional ({final_allowed:.2f} EUR) to place requested {desired_notional:.2f} EUR")
+                        self.logger.info(
+                            f"Blocking order: not enough allowed notional ({final_allowed:.2f} EUR) "
+                            f"to place requested {desired_notional:.2f} EUR"
+                        )
                         return None
                     scale = final_allowed / desired_notional
                     new_volume = float(volume) * scale
                     if aggressive:
-                        self.logger.info(f"Aggressive auto-scaling order volume from {volume} to {new_volume:.8f} due to risk caps (allowed {final_allowed:.2f} EUR)")
+                        self.logger.info(
+                            f"Aggressive auto-scaling order volume from {volume} to {new_volume:.8f} "
+                            f"due to risk caps (allowed {final_allowed:.2f} EUR)"
+                        )
                         volume = new_volume
                     else:
-                        self.logger.info(f"Auto-scaling order volume from {volume} to {new_volume:.8f} due to risk caps (allowed {final_allowed:.2f} EUR)")
+                        self.logger.info(
+                            f"Auto-scaling order volume from {volume} to {new_volume:.8f} "
+                            f"due to risk caps (allowed {final_allowed:.2f} EUR)"
+                        )
                         volume = new_volume
                 # enforce max positions per side
                 if side_count >= max_pos_per_side:
-                    self.logger.info(f"Blocking order: side already has {side_count} open positions (max {max_pos_per_side})")
+                    self.logger.info(
+                        f"Blocking order: side already has {side_count} open positions (max {max_pos_per_side})"
+                    )
                     return None
 
             # Use limit if price provided, otherwise market
@@ -239,11 +276,18 @@ class KrakenAPI:
             if leverage:
                 order_params['leverage'] = str(leverage)
 
-            response = self.api.query_private('AddOrder', order_params)
+            with acquire_order_lock(timeout_seconds=5.0) as locked:
+                if not locked:
+                    self.logger.warning("Order lock busy; skipping AddOrder to avoid concurrent execution race")
+                    return None
+                response = self.api.query_private('AddOrder', order_params)
             if self._handle_error(response, f"Place {direction.upper()} Order"):
                 return None
             result = response.get('result', {})
-            self.logger.info(f"Order placed successfully: {direction} {volume} {pair} ({order_type}, post_only={post_only})")
+            self.logger.info(
+                f"Order placed successfully: {direction} {volume} {pair} "
+                f"({order_type}, post_only={post_only}, reduce_only={reduce_only})"
+            )
             return result
         except Exception as e:
             self.logger.exception(f"Error placing order: {e}")

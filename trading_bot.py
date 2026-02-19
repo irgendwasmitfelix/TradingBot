@@ -30,6 +30,7 @@ class TradingBot:
         self.realized_pnl = {}
         self.fees_paid = {}
         self.trade_metrics = {}
+        self.closed_trade_pnls = []
         self.last_trade_at = {}
         self.entry_timestamps = {}
         self.last_global_trade_at = 0
@@ -116,7 +117,8 @@ class TradingBot:
         self.airbag_drop_threshold = float(self.config.get('risk_management', {}).get('airbag_drop_threshold', 15.0))
         self.airbag_window_minutes = int(self.config.get('risk_management', {}).get('airbag_window_minutes', 10))
         
-        # Sentiment integration
+        # Sentiment integration (opt-in)
+        self.enable_sentiment_guard = bool(self.config.get('risk_management', {}).get('enable_sentiment_guard', False))
         self.news_marquee_path = "/tmp/youtube_stream/news_marquee.txt"
         self.sentiment_pause_keywords = ["crash", "hack", "dump", "sec", "lawsuit", "regulation", "ban"]
         self.sentiment_active = False
@@ -353,6 +355,7 @@ class TradingBot:
             self.max_consecutive_losses = int(self.config.get('risk_management', {}).get('max_consecutive_losses', self.max_consecutive_losses))
             self.pause_after_loss_streak_minutes = int(self.config.get('risk_management', {}).get('pause_after_loss_streak_minutes', self.pause_after_loss_streak_minutes))
             self.sell_fee_buffer_percent = float(self.config.get('risk_management', {}).get('sell_fee_buffer_percent', self.sell_fee_buffer_percent))
+            self.enable_sentiment_guard = bool(self.config.get('risk_management', {}).get('enable_sentiment_guard', self.enable_sentiment_guard))
             # ATR + pyramiding reload
             self.enable_atr_stop = bool(self.config.get('risk_management', {}).get('enable_atr_stop', self.enable_atr_stop))
             self.atr_period = int(self.config.get('risk_management', {}).get('atr_period', self.atr_period))
@@ -744,9 +747,11 @@ class TradingBot:
         return profit_pct >= self._required_take_profit_percent(pair)
 
     def _update_trade_metrics(self, pair, pnl_eur):
+        pnl_eur = float(pnl_eur)
         m = self.trade_metrics.setdefault(pair, {"closed": 0, "wins": 0, "losses": 0, "sum_pnl": 0.0})
         m["closed"] += 1
         m["sum_pnl"] += pnl_eur
+        self.closed_trade_pnls.append(pnl_eur)
         if pnl_eur >= 0:
             m["wins"] += 1
             self.consecutive_losses = 0
@@ -762,21 +767,28 @@ class TradingBot:
                 self.kelly_fraction = self._calculate_kelly_fraction()
 
     def _calculate_kelly_fraction(self):
-        # Simple Kelly for the first pair
-        pair = self.trade_pairs[0]
-        m = self.trade_metrics.get(pair, {})
-        closed = m.get("closed", 0)
-        if closed < 10:
+        """Estimate Kelly fraction from realized closed trades (best-effort, bounded)."""
+        try:
+            pnls = list(self.closed_trade_pnls)
+            if len(pnls) < 10:
+                return 0.1
+
+            wins = [p for p in pnls if p > 0]
+            losses = [abs(p) for p in pnls if p < 0]
+            if not wins or not losses:
+                return 0.1
+
+            win_rate = len(wins) / len(pnls)
+            avg_win = sum(wins) / len(wins)
+            avg_loss = sum(losses) / len(losses)
+            if avg_win <= 0 or avg_loss <= 0:
+                return 0.1
+
+            b = avg_win / avg_loss
+            kelly = win_rate - ((1 - win_rate) / b)
+            return max(0.01, min(0.5, kelly))
+        except Exception:
             return 0.1
-        wins = m.get("wins", 0)
-        win_rate = wins / closed if closed > 0 else 0
-        total_pnl = m.get("sum_pnl", 0.0)
-        avg_win = sum([p for p in [total_pnl] if p > 0]) / wins if wins > 0 else 0  # approximate
-        avg_loss = sum([p for p in [total_pnl] if p < 0]) / (closed - wins) if closed - wins > 0 else 0
-        if avg_loss == 0:
-            return 0.1
-        kelly = win_rate - ((1 - win_rate) / (avg_win / abs(avg_loss)))
-        return max(0.01, min(0.5, kelly))
 
     def check_take_profit_or_stop_loss(self):
         """Evaluate exits with TP first, then ATR stop, hard stop, time stop, then trailing stop."""
@@ -950,8 +962,8 @@ class TradingBot:
                 best_pair, best_signal, best_score = self.analyze_all_pairs()
                 self._sync_account_state()
                 
-                # Sentiment scan
-                self.sentiment_active = self._scan_news_sentiment()
+                # Sentiment scan (opt-in)
+                self.sentiment_active = self._scan_news_sentiment() if self.enable_sentiment_guard else False
 
                 # Take profit / stop loss first
                 risk_pair, risk_type, change = self.check_take_profit_or_stop_loss()
@@ -1204,7 +1216,13 @@ class TradingBot:
             pnl_eur = (entry - price) * qty
             pnl_pct = ((entry - price) / entry) * 100.0
             self.logger.info(f"Placing SHORT CLOSE order: {qty:.6f} {pair} at ~{price:.2f} EUR")
-            result = self.api_client.place_order(pair=pair, direction='buy', volume=qty, leverage=self.short_leverage)
+            result = self.api_client.place_order(
+                pair=pair,
+                direction='buy',
+                volume=qty,
+                leverage=self.short_leverage,
+                reduce_only=True,
+            )
             if result:
                 self.trade_count += 1
                 now_ts = time.time()

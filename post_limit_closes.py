@@ -2,18 +2,19 @@
 """
 Post aggressive limit-close orders for profitable short positions, prioritized by efficiency (pnl / margin).
 Only posts limit BUYs to close shorts (type='sell').
-Config: LIMIT_OFFSET_PCT (how much below current price to place buy), MAX_POST (max orders to post per run)
+Config: LIMIT_OFFSET_PCT (how much ABOVE current price to place buy), MAX_POST (max orders to post per run)
 """
 import os, json, time
 from dotenv import load_dotenv
 from krakenex import API
+from order_lock import acquire_order_lock
 
 load_dotenv('/home/felix/TradingBot/.env')
 API_KEY=os.getenv('KRAKEN_API_KEY')
 API_SECRET=os.getenv('KRAKEN_API_SECRET')
 api=API(API_KEY, API_SECRET)
 
-LIMIT_OFFSET_PCT = 0.002  # 0.2% below current price for buy to close a short
+LIMIT_OFFSET_PCT = 0.001  # 0.1% above current price for aggressive buy-to-close
 MAX_POST = 12
 MIN_COST_EUR = 1.0  # skip very tiny positions
 
@@ -103,7 +104,7 @@ def main():
         pair=c['pair']
         vol=c['vol']
         cur=c['cur']
-        limit_price = max(0.0001, cur * (1.0 - LIMIT_OFFSET_PCT))
+        limit_price = max(0.0001, cur * (1.0 + LIMIT_OFFSET_PCT))
         # Kraken requires specific decimal precision per pair (EUR pairs typically up to 5 decimals)
         # Round price to 5 decimals to avoid 'Invalid price' errors
         try:
@@ -113,7 +114,11 @@ def main():
         # place limit buy to close short
         params={'pair': pair, 'type':'buy', 'ordertype':'limit', 'price': f"{limit_price:.5f}", 'volume': str(vol)}
         log(f"Posting limit close for {c['pid']} {pair} vol={vol:.8f} cur={cur} limit={limit_price:.6f} pnl={c['pnl']:.2f} eff={c['eff']:.4f}")
-        resp = safe_query_private('AddOrder', params)
+        with acquire_order_lock(timeout_seconds=5.0) as locked:
+            if not locked:
+                log('Order lock busy; skipping this candidate to avoid race conditions')
+                continue
+            resp = safe_query_private('AddOrder', params)
         if resp.get('error'):
             log(f"AddOrder error: {resp.get('error')}")
         else:
