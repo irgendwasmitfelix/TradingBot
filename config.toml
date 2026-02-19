@@ -136,6 +136,16 @@ results_output_path = "backtest_results/"
 generate_trade_reports = true
 report_output_path = "reports/"
 
+[execution]
+# Live execution options
+enable_live_limit_fallback = false
+limit_fallback_timeout_sec = 30
+# Default execution mode for live orders: immediate, twap, vwap
+default_execution_mode = "immediate"
+default_twap_slices = 3
+# Slippage model to use for sim + estimation: fixed or volatility
+default_slippage_model = "fixed"
+
 [alerts]
 # Notify on successful trades and critical errors
 notify_on = ["trade", "error"]
