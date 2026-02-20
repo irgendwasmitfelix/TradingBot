@@ -25,3 +25,13 @@ fi
 
 # rotate old logs (keep 30)
 find "$SIM_OUTDIR" -type f -name '*.log' -mtime +30 -delete || true
+
+# After running backtests, optionally auto-apply params based on latest results
+TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+AUTO_LOG="$WORKDIR/sim_output/auto_apply_${TIMESTAMP}.log"
+if [ -x "$PY" ]; then
+  "$PY" "$WORKDIR/scripts/auto_apply_params.py" > "$AUTO_LOG" 2>&1 || true
+else
+  python3 "$WORKDIR/scripts/auto_apply_params.py" > "$AUTO_LOG" 2>&1 || true
+fi
+
