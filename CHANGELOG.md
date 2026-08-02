@@ -1,5 +1,53 @@
 # Changelog
 
+## 2026-08-02 — Short-Seite repariert und wieder aktiviert
+
+Die Short-Seite hatte denselben strukturellen Fehler wie die Long-Seite, nur
+gehebelt: **genau ein Exit** (`SHORT_TAKE_PROFIT` bei +1.26 %), sonst nichts.
+Lief der Kurs hoch, wurde die Position unbegrenzt gehalten — auf einer 2×-Margin-
+Position, mit tickenden Rollover-Gebühren und dem Risiko, dass Kraken
+zwangsliquidiert, bevor der Bot reagiert.
+
+### 🚨 Kritisch
+- **feat(short): `SHORT_HARD_STOP` und `SHORT_TIME_STOP` implementiert**
+  Beide in `PROTECTIVE_EXIT_REASONS`, umgehen also das Profit-Gate.
+  `short_stop_loss_percent` existierte in der Config, wurde aber von **keinem**
+  Exit-Pfad gelesen — jetzt aktiv mit 3.0 %. Time-Stop bei 24 h.
+- **fix(short): Toter Code — die dokumentierte Notbremse hat nie gefeuert**
+  `if best_signal == "BUY"` stand innerhalb des `elif best_signal == "SELL"`-
+  Zweigs, war also unerreichbar. Der Short-Close bei bullischem Signal läuft
+  jetzt im BUY-Zweig, und zwar **vor** den Einstiegsfiltern — Pause, Max-Positionen
+  oder Handelszeiten dürfen keinen offenen Short blockieren.
+- **fix(short): Offener Short wurde beim Neustart zum Phantom-Long**
+  Shorts werden mit `side='short'` in `purchase_prices.json` geschrieben, der
+  Lade-Pfad hat das Feld aber ignoriert und alles als Long restauriert. Die echte
+  Position blieb dadurch unverwaltet auf Kraken stehen. Neu: `short_entry_timestamps`,
+  korrektes Laden nach `side`, und `_drop_persisted_position()` räumt beim Schließen auf.
+- **fix(short): Stops liefen nicht mehr, wenn Shorting deaktiviert wurde**
+  Die Exit-Prüfung hing an `enable_live_shorts`. Das Flag steuert jetzt nur noch
+  das *Öffnen* — offene Positionen behalten ihre Stops.
+
+### 💸 Rollover-Gebühren
+- **feat: `_short_rollover_cost_pct()`** — Kraken rechnet Margin-Rollover alle 4 h
+  ab. Die Kosten werden aus der Haltedauer geschätzt und in
+  `_can_close_short_profit_target()` vom Nettogewinn abgezogen.
+  Konfigurierbar über `rollover_fee_percent_per_4h` (Default 0.02).
+  Der 24 h-Time-Stop begrenzt die Rollover-Exposure auf ≈ 0.14 %.
+
+### ⚙️ Config
+- `shorting.enabled` wieder **true**, `short_stop_loss_percent` 99.0 → **3.0**
+- neu: `enable_short_hard_stop`, `enable_short_time_stop`,
+  `short_time_stop_hours`, `rollover_fee_percent_per_4h`
+
+### 🧪 Tests
+- Neu: `tests/test_short_exits.py` (13 Tests) — Stops, Rollover-Staffelung,
+  Restart-Wiederherstellung, Verhalten bei deaktiviertem Shorting.
+  Gesamt: 38 passed, 1 skipped.
+
+### ⚠️ Prüfen
+- `rollover_fee_percent_per_4h = 0.02` ist Krakens üblicher Satz, variiert aber
+  je nach Paar. Bitte gegen dein Konto abgleichen.
+
 ## 2026-08-02 — Risiko-Layer repariert (P0)
 
 ### 🚨 Kritisch

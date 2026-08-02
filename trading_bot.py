@@ -130,6 +130,11 @@ PROTECTIVE_EXIT_REASONS = frozenset({
     "TIME_STOP",
     "CRASH_AIRBAG",
     "BEAR_SHIELD",
+    # Short side — same reasoning, and more urgent: shorts are leveraged, accrue
+    # rollover fees and can be force-liquidated by the exchange.
+    "SHORT_HARD_STOP",
+    "SHORT_TIME_STOP",
+    "SHORT_SIGNAL_FLIP",
 })
 
 
@@ -187,6 +192,10 @@ class TradingBot:
         self.position_qty = {}
         self.short_qty = {}
         self.short_entry_prices = {}
+        # Short entries were previously in-memory only: a restart orphaned the
+        # position on Kraken (unmanaged, still accruing rollover). Persisted
+        # alongside longs in purchase_prices.json via side='short'.
+        self.short_entry_timestamps = {}
         self.realized_pnl = {}
         self.fees_paid = {}
         self.trade_metrics = {}
@@ -309,6 +318,17 @@ class TradingBot:
         self.max_short_notional_eur = float(self.config.get('shorting', {}).get('max_short_notional_eur', 50.0))
         self.short_take_profit_percent = float(self.config.get('shorting', {}).get('short_take_profit_percent', 2.5))
         self.short_stop_loss_percent = float(self.config.get('shorting', {}).get('short_stop_loss_percent', 3.5))
+        # short_stop_loss_percent existed but was never read by any exit path —
+        # a short had exactly one way out (SHORT_TAKE_PROFIT) and was otherwise
+        # held indefinitely, leveraged, while rollover fees accrued.
+        self.enable_short_hard_stop = bool(self.config.get('shorting', {}).get('enable_short_hard_stop', True))
+        self.enable_short_time_stop = bool(self.config.get('shorting', {}).get('enable_short_time_stop', True))
+        self.short_time_stop_hours = float(self.config.get('shorting', {}).get('short_time_stop_hours', 24.0))
+        # Kraken bills margin rollover every 4h. Nothing in the bot modelled this,
+        # so a short could clear the "net profit" gate while actually losing money.
+        self.rollover_fee_percent_per_4h = float(
+            self.config.get('shorting', {}).get('rollover_fee_percent_per_4h', 0.02)
+        )
         # Safety: minimum margin buffer (fraction of free margin to keep)
         self.min_free_margin_buffer = float(self.config.get('shorting', {}).get('min_free_margin_buffer', 0.05))
         # Short enabling toggle
@@ -1045,6 +1065,15 @@ class TradingBot:
                         persisted = {}
             for p, meta in (persisted or {}).items():
                 try:
+                    # Shorts are persisted into the same file with side='short'.
+                    # Loading them as longs turned an open short into a phantom
+                    # long on every restart, leaving the real position unmanaged.
+                    if str(meta.get('side', 'long')).lower() == 'short':
+                        self.short_qty[p] = float(meta.get('qty', 0.0) or 0.0)
+                        self.short_entry_prices[p] = float(meta.get('entry_price_eur', 0.0) or 0.0)
+                        self.short_entry_timestamps[p] = int(meta.get('entry_ts', 0) or 0)
+                        self.fees_paid[p] = float(meta.get('fees_eur', 0.0) or 0.0)
+                        continue
                     self.purchase_prices[p] = float(meta.get('entry_price_eur', 0.0) or 0.0)
                     self.position_qty[p] = float(meta.get('qty', 0.0) or 0.0)
                     self.entry_timestamps[p] = int(meta.get('entry_ts', 0) or 0)
@@ -1925,12 +1954,31 @@ class TradingBot:
         required_tp = float(self.short_take_profit_percent or 0.0)
         if profit_pct < required_tp:
             return False
-        # Enforce minimum NET profit after estimated roundtrip fees.
+        # Enforce minimum NET profit after estimated roundtrip fees AND the margin
+        # rollover Kraken charges every 4h for as long as the position is open.
         fees_total_frac = pct_to_frac(getattr(self, 'fees_maker_percent', 0.0)) + pct_to_frac(getattr(self, 'fees_taker_percent', 0.0))
         fees_total_pct = fees_total_frac * 100.0
-        net_profit_pct = profit_pct - fees_total_pct
+        net_profit_pct = profit_pct - fees_total_pct - self._short_rollover_cost_pct(pair)
         min_net = float(self.config.get('risk_management', {}).get('min_net_sell_profit_pct', self.min_net_sell_profit_pct))
         return net_profit_pct >= max(0.0, min_net)
+
+    def _short_rollover_cost_pct(self, pair):
+        """Estimated margin rollover cost of an open short, in percent of notional.
+
+        Kraken charges a rollover fee every 4 hours a margin position stays open.
+        Without this, a short held for days could satisfy the net-profit gate on
+        paper while the accrued fees had already eaten the gain.
+        """
+        rate = float(getattr(self, 'rollover_fee_percent_per_4h', 0.0) or 0.0)
+        if rate <= 0:
+            return 0.0
+        opened_at = self.short_entry_timestamps.get(pair)
+        if not opened_at:
+            return 0.0
+        hours_open = max(0.0, (time.time() - float(opened_at)) / 3600.0)
+        # Kraken bills the opening period immediately, then every further 4h.
+        periods = 1 + int(hours_open // 4)
+        return rate * periods
 
     def _update_trade_metrics(self, pair, pnl_eur):
         """Update per-pair win/loss counters and trigger loss-streak pause if needed.
@@ -2076,13 +2124,25 @@ class TradingBot:
             # Short position exits — use dedicated short TP/SL (lower than long TP)
             short_qty = self.short_qty.get(pair, 0.0)
             short_entry = self.short_entry_prices.get(pair, 0.0)
-            if self.enable_live_shorts and short_qty > 0 and short_entry > 0:
+            # Deliberately NOT gated on enable_live_shorts: that flag controls
+            # whether new shorts may be opened. An already-open position must keep
+            # its stops even after shorting is switched off, otherwise disabling
+            # the feature would strand it unmanaged.
+            if short_qty > 0 and short_entry > 0:
                 short_change_percent = ((short_entry - current_price) / short_entry) * 100.0
                 if short_change_percent >= self.short_take_profit_percent:
                     return pair, "SHORT_TAKE_PROFIT", short_change_percent
-                # Felix's rule: NEVER close a short at a loss. SHORT_HARD_STOP and
-                # SHORT_TIME_STOP are disabled so a losing short is held until it
-                # recovers into real net profit (handled by SHORT_TAKE_PROFIT above).
+
+                # A short that moves against us must be closable. Holding it until
+                # it "recovers into profit" is unbounded risk on a leveraged
+                # position, and the exchange will liquidate it before we do.
+                if self.enable_short_hard_stop and short_change_percent <= -abs(self.short_stop_loss_percent):
+                    return pair, "SHORT_HARD_STOP", short_change_percent
+
+                if self.enable_short_time_stop:
+                    opened_at = self.short_entry_timestamps.get(pair)
+                    if opened_at and (time.time() - opened_at) >= (self.short_time_stop_hours * 3600):
+                        return pair, "SHORT_TIME_STOP", short_change_percent
 
         return None, None, None
 
@@ -2719,6 +2779,18 @@ class TradingBot:
                         price = self.pair_prices.get(best_pair, 0)
                         if best_signal == "BUY":
                             score = float(self.pair_scores.get(best_pair, 0.0))
+                            # A bullish signal is the exit condition for an open short.
+                            # This used to sit inside the SELL branch, where
+                            # best_signal == "BUY" is unreachable — the documented
+                            # early close never fired. It must also run before the
+                            # BUY filters below, since none of them (pause, max
+                            # positions, trading hours) should keep a short open.
+                            if self.enable_live_shorts and self.short_qty.get(best_pair, 0.0) > 0:
+                                self.logger.info(
+                                    f"SHORT CLOSE on bullish signal for {best_pair} (price {price:.4f})"
+                                )
+                                self.execute_close_short_order(best_pair, price)
+                                continue
                             # Cheap checks first
                             if self._is_temporarily_paused():
                                 self.logger.warning("BUY paused: loss-streak cooling period active")
@@ -2829,24 +2901,20 @@ class TradingBot:
                                         f"(bearish={trend_bearish}, risk_off={risk_off_ok}, score={score:.2f})"
                                     )
                             elif self.enable_live_shorts and self.short_qty.get(best_pair, 0.0) > 0:
-                                # Close short ONLY on real net profit after fees (Felix's rule:
-                                # never close a short at a loss). The signal flip alone is not
-                                # enough — we require _can_close_short_profit_target.
+                                # Signal is SELL, i.e. still bearish — take profit if
+                                # the net target is met, otherwise let the position run.
+                                # Bullish-signal exits are handled in the BUY branch;
+                                # adverse moves are handled by SHORT_HARD_STOP /
+                                # SHORT_TIME_STOP in check_take_profit_or_stop_loss().
                                 if self._can_close_short_profit_target(best_pair, price):
                                     self.execute_close_short_order(best_pair, price)
                                 else:
-                                    # If we get a bullish signal, close early to avoid adverse move
-                                    if best_signal == "BUY":
-                                        self.execute_close_short_order(best_pair, price)
-                                        self.logger.info(
-                                            f"SHORT CLOSED early on bullish signal for {best_pair} (price {price:.2f})"
-                                        )
-                                    else:
-                                        se = self.short_entry_prices.get(best_pair, 0.0)
-                                        spp = ((se - price) / se * 100.0) if se > 0 else 0.0
-                                        self.logger.info(
-                                            f"SHORT CLOSE skipped for {best_pair}: net profit target not reached ({spp:.2f}% gross)"
-                                        )
+                                    se = self.short_entry_prices.get(best_pair, 0.0)
+                                    spp = ((se - price) / se * 100.0) if se > 0 else 0.0
+                                    self.logger.info(
+                                        f"SHORT CLOSE skipped for {best_pair}: net profit target not reached "
+                                        f"({spp:.2f}% gross, rollover {self._short_rollover_cost_pct(best_pair):.2f}%)"
+                                    )
                             else:
                                 self._log_empty_sell_signal_throttled(best_pair)
 
@@ -3258,6 +3326,7 @@ class TradingBot:
                 except Exception as e:
                     self.logger.warning(f"Could not persist short entry to {self.data_purchase_prices_path}: {e}")
                 self.entry_timestamps[pair] = int(now_ts)
+                self.short_entry_timestamps[pair] = int(now_ts)
                 self.logger.info(f"SHORT OPEN SUCCESS: {result}")
                 self.logger.info(f"SHORT OPEN SUMMARY: {pair} {volume:.6f} (~{notional:.2f} EUR)")
                 print(f"\n[SHORT OPEN] {volume:.6f} {pair} (~{notional:.2f} EUR) - Trade #{self.trade_count}")
@@ -3271,6 +3340,29 @@ class TradingBot:
                 self.logger.error(f"SHORT OPEN FAILED for {pair}")
         except Exception as e:
             self.logger.error(f"Error opening short order: {e}", exc_info=True)
+
+    def _drop_persisted_position(self, pair):
+        """Remove *pair* from purchase_prices.json after the position is closed.
+
+        A stale short entry would otherwise be restored on the next start and the
+        bot would manage a position that no longer exists.
+        """
+        try:
+            if not os.path.exists(self.data_purchase_prices_path):
+                return
+            with open(self.data_purchase_prices_path, 'r', encoding='utf-8') as pf:
+                try:
+                    existing = json.load(pf)
+                except Exception:
+                    return
+            if pair not in existing:
+                return
+            existing.pop(pair, None)
+            with open(self.data_purchase_prices_path + '.tmp', 'w', encoding='utf-8') as pf:
+                json.dump(existing, pf, separators=(',', ':'), ensure_ascii=False)
+            os.replace(self.data_purchase_prices_path + '.tmp', self.data_purchase_prices_path)
+        except Exception as e:
+            self.logger.warning(f"Could not drop persisted position for {pair}: {e}")
 
     def execute_close_short_order(self, pair, price):
         """Close an open leveraged short position on *pair* at *price*.
@@ -3304,6 +3396,8 @@ class TradingBot:
                 self.short_qty[pair] = 0.0
                 self.short_entry_prices[pair] = 0.0
                 self.entry_timestamps[pair] = None
+                self.short_entry_timestamps[pair] = None
+                self._drop_persisted_position(pair)
                 self.logger.info(f"SHORT CLOSE SUCCESS: {result}")
                 self.logger.info(f"SHORT CLOSE SUMMARY: {pair} {qty:.6f} (~{qty*price:.2f} EUR)")
                 self.logger.info(f"SHORT PNL ESTIMATE {pair}: {pnl_eur:.2f} EUR ({pnl_pct:.2f}%)")

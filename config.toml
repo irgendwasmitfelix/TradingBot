@@ -130,13 +130,20 @@ bear_confirm_candles = 3
 bear_benchmark_pair = "XXBTZEUR"
 bear_log_interval_minutes = 60
 [shorting]
-# Off until margin rollover fees are modelled — Kraken charges them every 4h and
-# the net-profit gate does not know about them (P1).
-enabled = false
+enabled = true
 leverage = "2"
 max_short_notional_eur = 25.0
 short_take_profit_percent = 1.26
-short_stop_loss_percent = 99.0
+# Real stop for shorts. Was 99.0 (= off) and additionally never read by any exit
+# path, so a losing short was held indefinitely on a leveraged position.
+short_stop_loss_percent = 3.0
+enable_short_hard_stop = true
+enable_short_time_stop = true
+short_time_stop_hours = 24.0
+# Kraken bills margin rollover every 4h. Deducted from the short's net profit
+# so a long-held short cannot look profitable while the fees have eaten the gain.
+# Check your actual rate per pair — 0.02%/4h is Kraken's common tier.
+rollover_fee_percent_per_4h = 0.02
 
 [logging]
 log_level = "INFO"
