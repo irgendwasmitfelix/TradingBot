@@ -187,6 +187,7 @@ class KrakenAPI:
             cached = self._public_cache.get(cache_key)
             if cached and (time.time() - cached['ts']) <= self._public_cache_ttl:
                 return cached['resp']
+        except Exception:
             cache_key = None
         last_error = None
         for attempt in range(retries):
@@ -257,6 +258,7 @@ class KrakenAPI:
             self._balance_cache_val = result
             self._balance_cache_ts = now
             return result
+        except Exception as e:
             self.logger.exception(f"Error fetching account balance: {e}")
             return None
 
@@ -268,6 +270,7 @@ class KrakenAPI:
             if self._handle_error(response, f"Market Data for {pair}"):
                 return None
             return response.get('result', {})
+        except Exception as e:
             self.logger.exception(f"Error fetching market data for {pair}: {e}")
             return None
 
@@ -280,6 +283,7 @@ class KrakenAPI:
             if self._handle_error(resp, f"Orderbook for {pair}"):
                 return None
             return resp.get('result', {})
+        except Exception as e:
             self.logger.exception(f"Error fetching order book for {pair}: {e}")
             return None
 
@@ -330,6 +334,7 @@ class KrakenAPI:
                 self.logger.debug(f"Failed to write OHLC cache for {pair}: {e}")
 
             return result
+        except Exception as e:
             self.logger.exception(f"Error fetching OHLC data for {pair}: {e}")
             return None
 
@@ -342,6 +347,7 @@ class KrakenAPI:
             if self._handle_error(response, "AssetPairs Query"):
                 return {}
             return response.get('result', {})
+        except Exception as e:
             self.logger.exception(f"Error fetching asset pairs: {e}")
             return {}
 
@@ -498,13 +504,13 @@ class KrakenAPI:
                     mf = equity
 
                 # compute allowed by margin (simple estimate using leverage)
-                if leverage is None:
-                    lev = 1.0
-                else:
-                    try:
-                        lev = float(leverage)
-                    except (ValueError, TypeError):
-                        self.logger.warning(f"Invalid leverage value {leverage!r}, treating as 1.0")
-                        lev = 1.0
-                allowed_by_margin = max(0.0, (mf - min_buffer) * lev)
-        except Exception as e:\n            self.logger.exception(f"Unexpected error in place_order: {e}")\n            return None\n
+                                # compute allowed by margin (simple estimate using leverage)
+                                if leverage is None:
+                                    lev = 1.0
+                                else:
+                                    try:
+                                        lev = float(leverage)
+                                    except (ValueError, TypeError):
+                                        self.logger.warning(f"Invalid leverage value {leverage!r}, treating as 1.0")
+                                        lev = 1.0
+                                allowed_by_margin = max(0.0, (mf - min_buffer) * lev)

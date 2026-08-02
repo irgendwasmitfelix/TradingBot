@@ -2278,7 +2278,7 @@ class TradingBot:
                 f"keeping {remaining_volume:.6f}"
             )
             result = self._place_live_order(
-                pair=pair, direction='sell', volume=sell_volume, price=price, post_only=True
+                pair=pair, direction='sell', volume=sell_volume, price=price, post_only=False
             )
             if result:
                 self._partial_exit_done[pair] = True
@@ -2931,7 +2931,7 @@ class TradingBot:
                 return
 
             prev_qty = self.holdings.get(pair, 0.0)
-            result = self._place_live_order(pair=pair, direction='buy', volume=volume, price=price, post_only=True)
+            result = self._place_live_order(pair=pair, direction='buy', volume=volume, price=price, post_only=False)
             if result:
                 # Wait for confirmation that the fill landed (or fallback provided a fill_price)
                 confirmed = False
@@ -3068,7 +3068,7 @@ class TradingBot:
 
             self.logger.info(f"Placing SELL order (MAKER/POST-ONLY): {volume:.6f} {pair} at {price:.2f} EUR")
             prev_qty = self.holdings.get(pair, 0.0)
-            result = self._place_live_order(pair=pair, direction='sell', volume=volume, price=price, post_only=True)
+            result = self._place_live_order(pair=pair, direction='sell', volume=volume, price=price, post_only=False)
             if result:
                 # Wait briefly for the exchange to reflect the sell (or for a provided fill_price)
                 confirmed = False
