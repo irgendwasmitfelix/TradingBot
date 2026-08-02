@@ -115,6 +115,23 @@ def _resolve_nas_root(config: dict) -> Path:
     return Path(config.get('paths', {}).get('nas_root', '/mnt/fritz_nas/Volume/kraken'))
 _TRADE_HISTORY_REFRESH_INTERVAL = 600  # seconds between Kraken API fetches (10 min)
 
+# Exit reasons that are *protective* — they must be able to close a position at a
+# LOSS.  Routing these through the profit gate (_can_sell_profit_target) made every
+# stop-loss unreachable: the gate demands a net gain, so a losing position could
+# never be closed and simply accumulated.  Protective exits therefore bypass the
+# gate; only discretionary exits (signal flips, TAKE_PROFIT) still honour it.
+PROTECTIVE_EXIT_REASONS = frozenset({
+    "STOP",
+    "ATR",
+    "ATR_TRAIL",
+    "BREAK_EVEN",
+    "TRAILING_STOP",
+    "HARD_STOP",
+    "TIME_STOP",
+    "CRASH_AIRBAG",
+    "BEAR_SHIELD",
+})
+
 
 def _sd_notify_watchdog() -> None:
     """Send WATCHDOG=1 ping to systemd via the NOTIFY_SOCKET (no extra packages needed)."""
@@ -220,11 +237,15 @@ class TradingBot:
         self.global_trade_cooldown_sec = int(self.config.get('risk_management', {}).get('global_trade_cooldown_seconds', 300))
         self.trailing_stop_percent = float(self.config.get('risk_management', {}).get('trailing_stop_percent', 1.5))
         self.min_buy_score = float(self.config.get("risk_management", {}).get("min_buy_score", 18.0))
-        print("DEBUG: min_buy_score:", self.min_buy_score)
-        self.logger.error("MIN_BUY_SCORE DEBUG: %s", self.min_buy_score)
         self.logger.info(f"min_buy_score loaded: {self.min_buy_score}")
+        # Shorts get their own threshold. Previously the short branch used
+        # -min_buy_score, so a negative min_buy_score inverted the filter and let
+        # every SELL signal open a short.
+        self.min_short_score = float(self.config.get("risk_management", {}).get("min_short_score", 18.0))
         self.adaptive_tp_enabled = bool(self.config.get('risk_management', {}).get('adaptive_take_profit', True))
-        self.max_tp_percent = float(self.config.get('risk_management', {}).get('max_take_profit_percent', 14.0))
+        self.max_tp_percent = self._sanitize_max_tp(
+            self.config.get('risk_management', {}).get('max_take_profit_percent', 14.0)
+        )
         self.sell_fee_buffer_percent = float(self.config.get('risk_management', {}).get('sell_fee_buffer_percent', 0.0))
         # Explicit fee estimates (percent): used for net-profit calculations and guards
         self.fees_maker_percent = float(self.config.get('risk_management', {}).get('fees_maker_percent', 0.16))
@@ -477,7 +498,10 @@ class TradingBot:
                     self.logger.warning(
                         f"BEAR SHIELD: selling {qty:.6f} {pair} @ {price:.4f} EUR to park in FIAT"
                     )
-                    self.execute_sell_order(pair, price)
+                    # Parking in FIAT is a protective exit — it must work while under
+                    # water, otherwise the shield only ever sells the winners.
+                    self.execute_sell_order(pair, price, require_profit_target=False,
+                                            reason="BEAR_SHIELD")
                     sold_any = True
         return sold_any
 
@@ -832,6 +856,15 @@ class TradingBot:
             self.target_volatility_pct = float(self.config.get('risk_management', {}).get('target_volatility_pct', self.target_volatility_pct))
             self.max_consecutive_losses = int(self.config.get('risk_management', {}).get('max_consecutive_losses', self.max_consecutive_losses))
             self.pause_after_loss_streak_minutes = int(self.config.get('risk_management', {}).get('pause_after_loss_streak_minutes', self.pause_after_loss_streak_minutes))
+            # Entry thresholds and the TP ceiling were missing from the hot-reload
+            # path, so edits to them only took effect after a full restart.
+            self.min_buy_score = float(self.config.get('risk_management', {}).get('min_buy_score', self.min_buy_score))
+            self.min_short_score = float(self.config.get('risk_management', {}).get('min_short_score', self.min_short_score))
+            self.adaptive_tp_enabled = bool(self.config.get('risk_management', {}).get('adaptive_take_profit', self.adaptive_tp_enabled))
+            self.max_tp_percent = self._sanitize_max_tp(
+                self.config.get('risk_management', {}).get('max_take_profit_percent', self.max_tp_percent)
+            )
+            self.min_net_sell_profit_pct = float(self.config.get('risk_management', {}).get('min_net_sell_profit_pct', self.min_net_sell_profit_pct))
             self.sell_fee_buffer_percent = float(self.config.get('risk_management', {}).get('sell_fee_buffer_percent', self.sell_fee_buffer_percent))
             # Refresh normalized fee fractions whenever config is reloaded
             try:
@@ -1800,6 +1833,21 @@ class TradingBot:
         except Exception:
             return None
 
+    @staticmethod
+    def _sanitize_max_tp(value, fallback=14.0):
+        """Return a usable take-profit ceiling.
+
+        ``max_take_profit_percent`` is applied via ``min()``, so a configured 0
+        silently pinned the required take-profit to 0% — the bot would then exit
+        at any gross gain and lose the fees on every round trip. Treat
+        non-positive or unparsable values as "no ceiling configured".
+        """
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return fallback
+        return value if value > 0 else fallback
+
     def _required_take_profit_percent(self, pair):
         """Adaptive TP: in stronger momentum, demand a bit more profit before selling.
         When enable_atr_dynamic_tp is on, the TP floor is raised to atr_tp_multiplier × ATR%
@@ -1990,8 +2038,13 @@ class TradingBot:
                     if s_price is not None and current_price <= s_price:
                         return pair, stop_data.get('type', 'STOP'), change_percent
 
-                    # Exit Check 2: Fixed Take Profit (ONLY if ATR trailing is NOT active)
-                    if not self.enable_atr_stop:
+                    # Exit Check 2: Fixed Take Profit.
+                    # Normally the ATR trail handles winners, but if no ATR could be
+                    # computed (no OHLC from NAS/API) the trail never gets armed — the
+                    # position would then have no take-profit at all. Fall back to the
+                    # fixed target whenever the trail is not actually active.
+                    atr_trail_armed = stop_data.get('type') in ('ATR', 'ATR_TRAIL')
+                    if not self.enable_atr_stop or not atr_trail_armed:
                         req_tp = self._required_take_profit_percent(pair)
                         if self.take_profit_percent > 0 and change_percent >= req_tp:
                             return pair, "TAKE_PROFIT", change_percent
@@ -2013,8 +2066,9 @@ class TradingBot:
                         if opened_at and (time.time() - opened_at) >= (self.time_stop_hours * 3600):
                             return pair, "TIME_STOP", change_percent
 
-                    # Legacy simple Trailing Stop-Loss
-                    if not self.enable_atr_stop and self.trailing_stop_percent > 0 and change_percent > 0:
+                    # Legacy simple Trailing Stop-Loss — also serves as the fallback
+                    # when the ATR trail could not be armed (see Exit Check 2).
+                    if (not self.enable_atr_stop or not atr_trail_armed) and self.trailing_stop_percent > 0 and change_percent > 0:
                         drop_from_peak = ((self.peak_prices[pair] - current_price) / self.peak_prices[pair]) * 100.0
                         if drop_from_peak >= self.trailing_stop_percent:
                             return pair, "TRAILING_STOP", change_percent
@@ -2421,7 +2475,9 @@ class TradingBot:
                 if self._check_airbag_trigger(pair):
                     # Panic sell if holding
                     if self.holdings.get(pair, 0) >= self._get_min_volume(pair):
-                        self.execute_sell_order(pair, current_price, require_profit_target=True, reason="CRASH_AIRBAG")
+                        # Flash-crash escape: never gate this on profit, that is the
+                        # whole point of the airbag.
+                        self.execute_sell_order(pair, current_price, require_profit_target=False, reason="CRASH_AIRBAG")
 
                 # Use cached hourly signals (refreshed periodically) when present
                 sig = self.pair_signals.get(pair)
@@ -2535,10 +2591,18 @@ class TradingBot:
                     if risk_pair:
                         price = self.pair_prices.get(risk_pair, 0)
                         print(f"\n[{risk_type}] {risk_pair} at {change:.2f}%")
-                        # All exits require profit target
-                        self.execute_sell_order(risk_pair, price,
-                                                require_profit_target=True,
-                                                reason=risk_type)
+                        if risk_type and risk_type.startswith("SHORT_"):
+                            # Short exits go through the dedicated close path — calling
+                            # execute_sell_order here would try to sell spot holdings
+                            # the bot does not have.
+                            self.execute_close_short_order(risk_pair, price)
+                        else:
+                            # Protective stops must be able to realise a loss, so they
+                            # bypass the profit gate. TAKE_PROFIT* still honours it.
+                            gate = risk_type not in PROTECTIVE_EXIT_REASONS
+                            self.execute_sell_order(risk_pair, price,
+                                                    require_profit_target=gate,
+                                                    reason=risk_type)
 
                     # ── Partial take-profit exit ─────────────────────────────
                     # Fires ONCE per entry when unrealised profit reaches
@@ -2757,7 +2821,7 @@ class TradingBot:
                                     if self.enable_regime_filter
                                     else True
                                 )
-                                if trend_bearish and risk_off_ok and score <= -self.min_buy_score:
+                                if trend_bearish and risk_off_ok and score <= -abs(self.min_short_score):
                                     self.execute_open_short_order(best_pair, price)
                                 else:
                                     self.logger.info(

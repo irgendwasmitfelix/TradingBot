@@ -187,6 +187,7 @@ class KrakenAPI:
             cached = self._public_cache.get(cache_key)
             if cached and (time.time() - cached['ts']) <= self._public_cache_ttl:
                 return cached['resp']
+        except Exception:
             cache_key = None
         last_error = None
         for attempt in range(retries):
@@ -257,6 +258,7 @@ class KrakenAPI:
             self._balance_cache_val = result
             self._balance_cache_ts = now
             return result
+        except Exception as e:
             self.logger.exception(f"Error fetching account balance: {e}")
             return None
 
@@ -268,6 +270,7 @@ class KrakenAPI:
             if self._handle_error(response, f"Market Data for {pair}"):
                 return None
             return response.get('result', {})
+        except Exception as e:
             self.logger.exception(f"Error fetching market data for {pair}: {e}")
             return None
 
@@ -280,6 +283,7 @@ class KrakenAPI:
             if self._handle_error(resp, f"Orderbook for {pair}"):
                 return None
             return resp.get('result', {})
+        except Exception as e:
             self.logger.exception(f"Error fetching order book for {pair}: {e}")
             return None
 
@@ -330,6 +334,7 @@ class KrakenAPI:
                 self.logger.debug(f"Failed to write OHLC cache for {pair}: {e}")
 
             return result
+        except Exception as e:
             self.logger.exception(f"Error fetching OHLC data for {pair}: {e}")
             return None
 
@@ -342,6 +347,7 @@ class KrakenAPI:
             if self._handle_error(response, "AssetPairs Query"):
                 return {}
             return response.get('result', {})
+        except Exception as e:
             self.logger.exception(f"Error fetching asset pairs: {e}")
             return {}
 
@@ -507,4 +513,413 @@ class KrakenAPI:
                         self.logger.warning(f"Invalid leverage value {leverage!r}, treating as 1.0")
                         lev = 1.0
                 allowed_by_margin = max(0.0, (mf - min_buffer) * lev)
-        except Exception as e:\n            self.logger.exception(f"Unexpected error in place_order: {e}")\n            return None\n
+
+                # Spot SELL orders reduce exposure — skip the margin cap entirely.
+                # (Margin cap only makes sense for opening leveraged positions.)
+                # NOTE: is_spot_sell check now handled above (pre-caps bypass).
+
+                self.logger.debug(
+                    f"Preflight caps: dir={direction} lev={leverage} "
+                    f"equity={equity:.2f} mf={mf:.2f} allowed_side={allowed_by_side:.2f} "
+                    f"allowed_margin={allowed_by_margin:.2f} tb_empty={not tb}"
+                )
+
+                if not tb:
+                    # TradeBalance returned no data (API error or spot account quirk).
+                    # Fail-open: allow up to the configured side cap so buys can proceed.
+                    self.logger.warning(
+                        "TradeBalance returned no data; skipping margin cap — using side cap only"
+                    )
+                    final_allowed = allowed_by_side
+                else:
+                    final_allowed = min(allowed_by_side, allowed_by_margin)
+                self.logger.debug(
+                    f"Preflight: equity={equity:.2f} mf={mf:.2f} side_exp={side_exposure:.2f} "
+                    f"allowed_side={allowed_by_side:.2f} allowed_margin={allowed_by_margin:.2f} final={final_allowed:.2f}"
+                )
+
+                aggressive = bool(risk_cfg.get('aggressive_autoscale', False))
+
+                if desired_notional is not None and desired_notional > final_allowed:
+                    # scale down if aggressive, otherwise block
+                    if final_allowed < min_auto_notional:
+                        # Provide detailed debug info to help diagnose why allowed notional
+                        # is below the configured minimum. Keep blocking behavior unchanged.
+                        try:
+                            self.logger.info(
+                                f"Blocking order: not enough allowed notional ({final_allowed:.2f} EUR) "
+                                f"to place requested {desired_notional:.2f} EUR"
+                            )
+                            self.logger.debug(
+                                "Notional preflight details: "
+                                f"pair={pair} dir={direction} desired_price={desired_price} "
+                                f"desired_notional={desired_notional} min_auto_notional={min_auto_notional} "
+                                f"allowed_by_side={allowed_by_side:.2f} allowed_by_margin={allowed_by_margin:.2f} "
+                                f"final_allowed={final_allowed:.2f} equity={equity:.2f} mf={mf:.2f}"
+                            )
+                        except Exception:
+                            # best-effort logging; do not raise
+                            pass
+                        return None
+                    scale = final_allowed / desired_notional
+                    new_volume = float(volume) * scale
+                    if aggressive:
+                        self.logger.info(
+                            f"Aggressive auto-scaling order volume from {volume} to {new_volume:.8f} "
+                            f"due to risk caps (allowed {final_allowed:.2f} EUR)"
+                        )
+                        volume = new_volume
+                    else:
+                        self.logger.info(
+                            f"Auto-scaling order volume from {volume} to {new_volume:.8f} "
+                            f"due to risk caps (allowed {final_allowed:.2f} EUR)"
+                        )
+                        volume = new_volume
+                # enforce max positions per side
+                if side_count >= max_pos_per_side:
+                    self.logger.info(
+                        f"Blocking order: side already has {side_count} open positions (max {max_pos_per_side})"
+                    )
+                    return None
+
+            # Use limit if price provided, otherwise market
+            # If post_only is True, force limit order
+            order_type = 'limit' if (price or post_only) else 'market'
+            
+            order_params = {
+                'pair': pair,
+                'type': direction,
+                'ordertype': order_type,
+                'volume': str(volume)
+            }
+            
+            if price:
+                order_params['price'] = str(price)
+            
+            if post_only:
+                order_params['oflags'] = 'post'
+                
+            if leverage:
+                # Kraken expects leverage as integer-like string (no trailing .0).
+                try:
+                    lev = float(leverage)
+                    if abs(lev - int(lev)) < 1e-8:
+                        order_params['leverage'] = str(int(lev))
+                    else:
+                        order_params['leverage'] = str(lev)
+                except Exception:
+                    order_params['leverage'] = str(leverage)
+
+            # Staggered limit ladder for large notional orders (simple execution hardening)
+            try:
+                ladder_threshold = float(risk_cfg.get('ladder_threshold_eur', 250.0))
+                ladder_chunks = int(risk_cfg.get('ladder_chunks', 4))
+                ladder_pause = float(risk_cfg.get('ladder_pause_seconds', 0.8))
+            except Exception:
+                ladder_threshold = 250.0
+                ladder_chunks = 4
+                ladder_pause = 0.8
+
+            if not self.paper_mode and desired_notional and desired_notional >= ladder_threshold and ladder_chunks > 1 and not reduce_only:
+                # split into chunks to reduce immediate market impact
+                try:
+                    chunk_volume = float(volume) / float(ladder_chunks)
+                    results = []
+                    for i in range(ladder_chunks):
+                        # small sleep/pause between chunks
+                        time.sleep(ladder_pause)
+                        # attempt to place chunk (respecting post_only/price)
+                        with acquire_order_lock(timeout_seconds=5.0) as locked:
+                            if not locked:
+                                self.logger.warning('Order lock busy during ladder; aborting remaining chunks')
+                                break
+                            order_params['volume'] = str(chunk_volume)
+                            resp = self.api.query_private('AddOrder', order_params)
+                        if resp is None or self._handle_error(resp, f"Ladder AddOrder chunk {i+1}"):
+                            self.logger.warning(f"Ladder chunk {i+1} failed or rate-limited")
+                            break
+                        results.append(resp.get('result', {}))
+                    return {'txid': [r.get('txid') for r in results if isinstance(r, dict) and r.get('txid')], 'chunked': True, 'result_chunks': results}
+                except Exception as e:
+                    self.logger.debug(f"Ladder execution failed: {e}")
+
+            # Paper mode: simulate an immediate fill at mid market price
+            if self.paper_mode:
+                try:
+                    ob = self.get_order_book(pair, count=3) or {}
+                    key = next(iter(ob.keys())) if ob else None
+                    if key:
+                        bids = ob[key].get('bids', [])
+                        asks = ob[key].get('asks', [])
+                        best_bid = float(bids[0][0]) if bids else None
+                        best_ask = float(asks[0][0]) if asks else None
+                        if best_bid and best_ask:
+                            mid = (best_bid + best_ask) / 2.0
+                        else:
+                            mid = None
+                    else:
+                        mid = None
+                except Exception:
+                    mid = None
+
+                txid = f"PAPER-{int(time.time()*1000)}"
+                res = {'txid': [txid], 'simulated': True}
+                if mid:
+                    res['fill_price'] = mid
+                self.logger.info(f"[PAPER] Simulated order: {direction} {volume} {pair} @ {res.get('fill_price')} ({order_type})")
+                return res
+
+            with acquire_order_lock(timeout_seconds=5.0) as locked:
+                if not locked:
+                    self.logger.warning("Order lock busy; skipping AddOrder to avoid concurrent execution race")
+                    return None
+                response = self.api.query_private('AddOrder', order_params)
+            if self._handle_error(response, f"Place {direction.upper()} Order"):
+                return None
+            result = response.get('result', {})
+            # Order was accepted: invalidate caches so next check reflects the new state
+            self.invalidate_open_orders_cache()
+            self.invalidate_balance_cache()
+            self.logger.info(
+                f"Order placed successfully: {direction} {volume} {pair} "
+                f"({order_type}, post_only={post_only}, reduce_only={reduce_only})"
+            )
+            return result
+        except Exception as e:
+            self.logger.exception(f"Error placing order: {e}")
+            return None
+
+    def get_open_orders(self):
+        """Return open orders, using a short-lived cache to avoid duplicate API calls.
+
+        Multiple callers per loop cycle (reserve estimation, has_open_order check)
+        are collapsed into a single OpenOrders request.  The cache is invalidated
+        by ``invalidate_open_orders_cache()`` after every order placement.
+        """
+        try:
+            now = time.time()
+            if self._open_orders_cache_val is not None and (now - self._open_orders_cache_ts) < self._open_orders_cache_ttl:
+                return self._open_orders_cache_val
+            response = self._query_private_with_backoff('OpenOrders')
+            if response is None:
+                return None
+            if self._handle_error(response, "Open Orders Query"):
+                return None
+            result = response.get('result', {})
+            self._open_orders_cache_val = result
+            self._open_orders_cache_ts = now
+            return result
+        except Exception as e:
+            self.logger.exception(f"Error fetching open orders: {e}")
+            return None
+
+    def cancel_order(self, order_id):
+        try:
+            time.sleep(self.rate_limit_delay)
+            response = self.api.query_private('CancelOrder', {'txid': order_id})
+            if self._handle_error(response, f"Cancel Order {order_id}"):
+                return None
+            result = response.get('result', {})
+            self.logger.info(f"Order {order_id} cancelled successfully")
+            return result
+        except Exception as e:
+            self.logger.exception(f"Error cancelling order {order_id}: {e}")
+            return None
+
+    def place_order_with_fallback(self, pair, direction, volume, price=None, leverage=None, post_only=False, reduce_only=False, timeout_sec=30):
+        """Attempt a limit/post-only order first (if price provided), then fallback to market after timeout if not filled.
+
+        This is a conservative fallback wrapper around place_order. It only takes effect when price is provided or post_only is True.
+        """
+        try:
+            # If no price specified, just place market order
+            if not price and not post_only:
+                return self.place_order(pair, direction, volume, price=None, leverage=leverage, post_only=False, reduce_only=reduce_only)
+
+            # place limit/post-only order
+            order = self.place_order(pair, direction, volume, price=price, leverage=leverage, post_only=post_only, reduce_only=reduce_only)
+            if not order:
+                self.logger.debug("Initial limit order failed or was rejected; placing market instead")
+                return self.place_order(pair, direction, volume, price=None, leverage=leverage, post_only=False, reduce_only=reduce_only)
+
+            txid = None
+            # Extract txid depending on API result structure
+            if isinstance(order, dict):
+                txs = order.get('txid') or order.get('tx') or None
+                if isinstance(txs, list) and txs:
+                    txid = txs[0]
+                elif isinstance(txs, str):
+                    txid = txs
+
+            # If no txid, assume filled or cannot monitor -- return what we have
+            if not txid:
+                return order
+
+            # Poll open orders until filled or timeout
+            start = time.time()
+            while time.time() - start < float(timeout_sec):
+                time.sleep(self.rate_limit_delay)
+                open_orders = self.get_open_orders() or {}
+                # open_orders structure may contain txids under 'open'
+                # check for presence of txid
+                found = False
+                try:
+                    # open_orders may be a dict with 'open' key
+                    if isinstance(open_orders, dict):
+                        open_map = open_orders.get('open', open_orders)
+                        if txid in open_map or any(str(txid) in k for k in open_map.keys()):
+                            found = True
+                except Exception:
+                    found = True
+                if not found:
+                    # order not found among open orders -> likely filled
+                    self.logger.info(f"Order {txid} no longer open (likely filled)")
+                    return order
+            # timeout reached
+            # Check config: if user prefers pure maker flow, do not auto-fallback to market
+            prefer_maker_only = False
+            try:
+                cfg_path = os.path.join(os.path.dirname(__file__), 'config.toml')
+                if os.path.exists(cfg_path):
+                    exec_cfg = toml.load(cfg_path).get('execution', {})
+                    prefer_maker_only = bool(exec_cfg.get('prefer_maker_only', False))
+            except Exception:
+                pass
+
+            if prefer_maker_only:
+                self.logger.info(f"Timeout waiting for order {txid}; prefer_maker_only enabled — leaving limit order open")
+                return order
+
+            self.logger.info(f"Timeout waiting for order {txid}; cancelling and placing market order")
+            try:
+                self.cancel_order(txid)
+            except Exception:
+                self.logger.debug("Cancel failed or no longer valid")
+            return self.place_order(pair, direction, volume, price=None, leverage=leverage, post_only=False, reduce_only=reduce_only)
+        except Exception as e:
+            self.logger.exception(f"Error in place_order_with_fallback: {e}")
+            return None
+
+    def get_ledgers(self, asset=None, start=None, fetch_all=False, max_pages=200):
+        """Fetch ledger entries (deposits/withdrawals/trades/etc)."""
+        try:
+            params = {}
+            if asset:
+                params['asset'] = asset
+            if start:
+                params['start'] = int(start)
+
+            if not fetch_all:
+                response = self._query_private_with_backoff('Ledgers', params)
+                if response is None:
+                    return None
+                if self._handle_error(response, "Ledgers Query"):
+                    return None
+                return response.get('result', {}).get('ledger', {})
+
+            all_entries = {}
+            ofs = 0
+            page = 0
+            total_count = None
+
+            while page < max_pages:
+                query_params = dict(params)
+                query_params['ofs'] = ofs
+                time.sleep(self.rate_limit_delay)
+                response = self.api.query_private('Ledgers', query_params)
+                if self._handle_error(response, f"Ledgers Query (ofs={ofs})"):
+                    return all_entries if all_entries else None
+
+                result = response.get('result', {})
+                ledger = result.get('ledger', {}) or {}
+                total_count = result.get('count', total_count)
+
+                if not ledger:
+                    break
+
+                all_entries.update(ledger)
+                batch_len = len(ledger)
+                ofs += batch_len
+                page += 1
+
+                if total_count is not None and ofs >= int(total_count):
+                    break
+
+            return all_entries
+        except Exception as e:
+            self.logger.exception(f"Error fetching ledgers: {e}")
+            return None
+
+    def get_trade_history(self, start=None, fetch_all=False, max_pages=200):
+        try:
+            params = {}
+            if start:
+                params['start'] = int(start)
+
+            if not fetch_all:
+                response = self._query_private_with_backoff('TradesHistory', params)
+                if response is None:
+                    return None
+                if self._handle_error(response, "Trade History Query"):
+                    return None
+                return response.get('result', {}).get('trades', {})
+
+            # Paginated fetch: collect all pages from start timestamp
+            all_trades = {}
+            ofs = 0
+            page = 0
+            total_count = None
+
+            while page < max_pages:
+                query_params = dict(params)
+                query_params['ofs'] = ofs
+                time.sleep(self.rate_limit_delay)
+                response = self.api.query_private('TradesHistory', query_params)
+                if self._handle_error(response, f"Trade History Query (ofs={ofs})"):
+                    return all_trades if all_trades else None
+
+                result = response.get('result', {})
+                trades = result.get('trades', {}) or {}
+                total_count = result.get('count', total_count)
+
+                if not trades:
+                    break
+
+                all_trades.update(trades)
+                batch_len = len(trades)
+                ofs += batch_len
+                page += 1
+
+                if total_count is not None and ofs >= int(total_count):
+                    break
+
+            return all_trades
+        except Exception as e:
+            self.logger.exception(f"Error fetching trade history: {e}")
+            return None
+
+    def _acquire_rate(self):
+        """Simple rate limiter: ensures at least `rate_limit_delay` seconds
+        elapse between successive API calls on this instance.
+        """
+        # Prefer central token-bucket if available
+        if getattr(self, '_use_token_bucket', False):
+            try:
+                ok = token_bucket.try_consume(self._tb_name, amount=1.0, block=True, timeout=5.0)
+                if ok:
+                    return
+            except Exception:
+                # fall through to local limiter
+                pass
+
+        with self._rate_lock:
+            now = time.time()
+            if now < self._next_allowed:
+                to_sleep = self._next_allowed - now
+                try:
+                    time.sleep(to_sleep)
+                except Exception:
+                    pass
+                now = time.time()
+            # schedule next allowed time
+            self._next_allowed = now + float(self.rate_limit_delay)

@@ -11,6 +11,14 @@ def make_bot_stub():
             return {pair: [[0,0,0,0,100,0,0,0]]*30}
         def query_public(self, *a, **k):
             return {}
+        def get_asset_pairs(self):
+            return {'XBTEUR': {'altname': 'XBTEUR', 'wsname': 'XBT/EUR'}}
+        def get_account_balance(self):
+            return {}
+        def get_open_orders(self):
+            return {}
+        def get_trade_history(self, *a, **k):
+            return {}
     cfg = {
         'bot_settings': {'trade_pairs': ['XBTEUR'], 'trade_amounts': {'trade_amount_eur': 30.0}},
         'risk_management': {
